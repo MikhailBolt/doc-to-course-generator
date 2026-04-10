@@ -4,11 +4,12 @@ import sys
 import json
 import html
 import time
+import math
 import hashlib
 import argparse
 from pathlib import Path
 from datetime import datetime
-from typing import List, Dict, Any, Tuple
+from typing import List, Dict, Any, Tuple, Optional
 
 from dotenv import load_dotenv
 from langchain_community.document_loaders import PyPDFLoader
@@ -37,6 +38,7 @@ DEFAULT_CHUNK_SIZE = 1200
 DEFAULT_CHUNK_OVERLAP = 200
 DEFAULT_TOP_K = 6
 DEFAULT_QUIZ_QUESTIONS = 10
+DEFAULT_RETRIEVAL_TYPE = "similarity"  # similarity | mmr
 
 
 # =========================
@@ -123,13 +125,25 @@ def parse_args() -> argparse.Namespace:
         "--quiz-questions",
         type=int,
         default=int(os.getenv("QUIZ_QUESTIONS", DEFAULT_QUIZ_QUESTIONS)),
-        help="Number of quiz questions to generate",
+        help="Number of final quiz questions to generate",
+    )
+    parser.add_argument(
+        "--pretest-questions",
+        type=int,
+        default=int(os.getenv("PRETEST_QUESTIONS", 5)),
+        help="Number of diagnostic pre-test questions",
     )
     parser.add_argument(
         "--difficulty",
         choices=["easy", "medium", "hard"],
         default=os.getenv("DIFFICULTY", "medium"),
         help="Quiz/course difficulty level",
+    )
+    parser.add_argument(
+        "--retrieval-type",
+        choices=["similarity", "mmr"],
+        default=os.getenv("RETRIEVAL_TYPE", DEFAULT_RETRIEVAL_TYPE),
+        help="Retriever strategy",
     )
     parser.add_argument(
         "--rebuild",
@@ -151,11 +165,6 @@ def clean_text(text: str) -> str:
     text = re.sub(r"\n{3,}", "\n\n", text)
     text = re.sub(r"[ \t]{2,}", " ", text)
     return text.strip()
-
-
-def safe_filename(name: str) -> str:
-    name = re.sub(r"[^a-zA-Z0-9._-]+", "_", name)
-    return name.strip("_") or "output"
 
 
 def normalize_json_block(text: str) -> str:
@@ -182,6 +191,71 @@ def extract_json_from_text(text: str) -> Any:
         if match:
             return json.loads(match.group(1))
         raise
+
+
+def slugify(text: str) -> str:
+    text = text.lower().strip()
+    text = re.sub(r"[^a-z0-9а-яё\s_-]", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"[\s_]+", "-", text)
+    return text.strip("-") or "section"
+
+
+def strip_html_tags(text: str) -> str:
+    return re.sub(r"<[^>]+>", "", text)
+
+
+def sanitize_lesson_html(section_html: str) -> str:
+    """
+    Light safety cleanup. This is not a full sanitizer,
+    but it removes obvious script/style blocks and inline event handlers.
+    """
+    section_html = re.sub(r"<script.*?>.*?</script>", "", section_html, flags=re.IGNORECASE | re.DOTALL)
+    section_html = re.sub(r"<style.*?>.*?</style>", "", section_html, flags=re.IGNORECASE | re.DOTALL)
+    section_html = re.sub(r"\son\w+\s*=\s*(['\"]).*?\1", "", section_html, flags=re.IGNORECASE | re.DOTALL)
+    return section_html.strip()
+
+
+def deduplicate_questions(questions: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    unique = []
+    seen = set()
+
+    for item in questions:
+        q = re.sub(r"\s+", " ", str(item.get("question", "")).strip().lower())
+        if not q or q in seen:
+            continue
+        seen.add(q)
+        unique.append(item)
+
+    return unique
+
+
+def estimate_duration_minutes(outline: Dict[str, Any]) -> int:
+    lessons = outline.get("lessons", [])
+    lesson_count = len(lessons) if isinstance(lessons, list) else 0
+    # simple heuristic for generated course reading + quiz time
+    return max(20, lesson_count * 12 + 10)
+
+
+def retry_llm_json(
+    llm: OllamaLLM,
+    prompt: str,
+    max_attempts: int = 3,
+) -> Any:
+    last_error = None
+
+    for attempt in range(1, max_attempts + 1):
+        raw = call_llm(llm, prompt)
+        try:
+            return extract_json_from_text(raw)
+        except Exception as e:
+            last_error = e
+            prompt = (
+                "Your previous answer was not valid JSON. "
+                "Return ONLY valid JSON with no markdown fences.\n\n"
+                + prompt
+            )
+
+    raise ValueError(f"Failed to get valid JSON after {max_attempts} attempts: {last_error}")
 
 
 # =========================
@@ -411,12 +485,12 @@ def generate_course_outline(
     difficulty: str,
 ) -> Dict[str, Any]:
     prompt = f"""
-You are an instructional designer.
+You are an expert instructional designer.
 
 Based ONLY on the document content below, generate a structured training course outline.
 
 Requirements:
-- The course must be practical and clear.
+- The course must be practical, clear, and useful for real learning.
 - Difficulty level: {difficulty}.
 - Return ONLY valid JSON.
 - The JSON schema must be:
@@ -425,7 +499,14 @@ Requirements:
   "course_title": "string",
   "course_description": "string",
   "target_audience": "string",
+  "prerequisites": ["string", "string"],
   "learning_outcomes": ["string", "string"],
+  "glossary": [
+    {{
+      "term": "string",
+      "definition": "string"
+    }}
+  ],
   "lessons": [
     {{
       "title": "string",
@@ -438,14 +519,15 @@ Requirements:
 Rules:
 - Create 4 to 7 lessons.
 - Each lesson should have 3 to 5 key points.
+- Create 3 to 8 glossary items.
 - Do not invent topics that are not supported by the documents.
 - Be specific.
+- Keep target_audience short.
 
 DOCUMENT CONTENT:
 {preview_text}
 """
-    raw = call_llm(llm, prompt)
-    data = extract_json_from_text(raw)
+    data = retry_llm_json(llm, prompt)
 
     if not isinstance(data, dict):
         raise ValueError("Course outline LLM output is not a JSON object.")
@@ -457,12 +539,22 @@ DOCUMENT CONTENT:
     return data
 
 
-def retrieve_lesson_context(vectorstore: FAISS, lesson_title: str, key_points: List[str], top_k: int) -> List[Any]:
+def retrieve_lesson_context(
+    vectorstore: FAISS,
+    lesson_title: str,
+    key_points: List[str],
+    top_k: int,
+    retrieval_type: str,
+) -> List[Any]:
     query = lesson_title
     if key_points:
         query += "\n" + "\n".join(key_points)
 
-    docs = vectorstore.similarity_search(query, k=top_k)
+    if retrieval_type == "mmr":
+        docs = vectorstore.max_marginal_relevance_search(query, k=top_k, fetch_k=max(top_k * 2, 8))
+    else:
+        docs = vectorstore.similarity_search(query, k=top_k)
+
     return docs
 
 
@@ -474,8 +566,8 @@ def generate_lesson_html_section(
     retrieved_docs: List[Any],
 ) -> Dict[str, Any]:
     context_blocks = []
-
     sources = []
+
     for doc in retrieved_docs:
         page = doc.metadata.get("page")
         page_num = page + 1 if isinstance(page, int) else "N/A"
@@ -497,9 +589,9 @@ def generate_lesson_html_section(
     context_text = "\n\n".join(context_blocks)
 
     prompt = f"""
-You are creating a lesson section for an HTML training course.
+You are creating one lesson section for an HTML training course.
 
-Write the content for this lesson using ONLY the provided context.
+Write the lesson using ONLY the provided context.
 
 Lesson title: {lesson_title}
 Lesson goal: {lesson_goal}
@@ -509,7 +601,8 @@ Key points:
 Return ONLY valid JSON with this schema:
 {{
   "lesson_html": "<section>...</section>",
-  "summary": "string"
+  "summary": "string",
+  "key_takeaways": ["string", "string", "string"]
 }}
 
 Requirements for lesson_html:
@@ -518,9 +611,9 @@ Requirements for lesson_html:
 - Include:
   - <h2> lesson title
   - <p> lesson goal/introduction
-  - a short explanatory body
+  - 2 to 4 short paragraphs
   - <ul> with key takeaways
-  - a small "In practice" subsection
+  - one subsection titled "In practice"
 - Do not include full HTML page, only section HTML.
 - Do not use markdown.
 - Keep it readable and concise.
@@ -529,23 +622,99 @@ Requirements for lesson_html:
 CONTEXT:
 {context_text}
 """
-    raw = call_llm(llm, prompt)
-    data = extract_json_from_text(raw)
+    data = retry_llm_json(llm, prompt)
 
     if not isinstance(data, dict):
         raise ValueError(f"Lesson generation failed for lesson: {lesson_title}")
 
-    lesson_html = data.get("lesson_html", "").strip()
-    summary = data.get("summary", "").strip()
+    lesson_html = sanitize_lesson_html(str(data.get("lesson_html", "")).strip())
+    summary = str(data.get("summary", "")).strip()
+    key_takeaways = data.get("key_takeaways", [])
 
     if not lesson_html:
         raise ValueError(f"Empty lesson_html for lesson: {lesson_title}")
 
+    if not isinstance(key_takeaways, list):
+        key_takeaways = []
+
     return {
         "lesson_html": lesson_html,
         "summary": summary,
+        "key_takeaways": key_takeaways,
         "sources": sources,
     }
+
+
+def generate_pretest(
+    llm: OllamaLLM,
+    outline: Dict[str, Any],
+    pretest_questions: int,
+    difficulty: str,
+) -> List[Dict[str, Any]]:
+    prompt = f"""
+You are generating a short diagnostic pre-test for a course.
+
+Difficulty: {difficulty}
+Generate exactly {pretest_questions} questions.
+
+Return ONLY valid JSON as an array.
+Each item must follow this schema:
+
+[
+  {{
+    "question": "string",
+    "type": "single_choice",
+    "options": ["A", "B", "C", "D"],
+    "correct_answer": "one of the options exactly",
+    "explanation": "string"
+  }}
+]
+
+Rules:
+- Use ONLY topics that appear in the course outline below.
+- Keep questions broad and diagnostic.
+- Each question must have exactly 4 options.
+- Only 1 option must be correct.
+
+COURSE OUTLINE:
+{json.dumps(outline, ensure_ascii=False, indent=2)}
+"""
+    data = retry_llm_json(llm, prompt)
+
+    if not isinstance(data, list):
+        raise ValueError("Pre-test output is not a JSON array.")
+
+    cleaned = []
+    for item in data:
+        if not isinstance(item, dict):
+            continue
+
+        question = str(item.get("question", "")).strip()
+        options = item.get("options", [])
+        correct_answer = str(item.get("correct_answer", "")).strip()
+        explanation = str(item.get("explanation", "")).strip()
+
+        if not question or not isinstance(options, list) or len(options) != 4:
+            continue
+        if correct_answer not in options:
+            continue
+
+        cleaned.append(
+            {
+                "question": question,
+                "type": "single_choice",
+                "options": options,
+                "correct_answer": correct_answer,
+                "explanation": explanation,
+            }
+        )
+
+    cleaned = deduplicate_questions(cleaned)
+
+    if not cleaned:
+        raise ValueError("No valid pre-test questions were generated.")
+
+    return cleaned[:pretest_questions]
 
 
 def generate_quiz(
@@ -565,11 +734,12 @@ def generate_quiz(
                 "goal": lesson.get("goal", ""),
                 "key_points": lesson.get("key_points", []),
                 "summary": summary,
+                "key_takeaways": lesson_payloads[idx - 1].get("key_takeaways", []),
             }
         )
 
     prompt = f"""
-You are generating a multiple-choice quiz for a training course.
+You are generating a final quiz for a training course.
 
 Difficulty: {difficulty}
 Generate exactly {quiz_questions} questions.
@@ -580,7 +750,8 @@ Each item must follow this schema:
 [
   {{
     "question": "string",
-    "options": ["A", "B", "C", "D"],
+    "type": "single_choice" or "true_false",
+    "options": ["A", "B", "C", "D"] OR ["True", "False"],
     "correct_answer": "one of the options exactly",
     "explanation": "string"
   }}
@@ -588,17 +759,19 @@ Each item must follow this schema:
 
 Rules:
 - Use ONLY the information from the lesson summaries below.
-- Each question must have exactly 4 options.
+- At least 70% of questions should be single_choice.
+- true_false questions must use exactly ["True", "False"].
+- single_choice questions must have exactly 4 options.
 - Only 1 option must be correct.
 - Options must be plausible.
 - Explanations should be concise.
 - Avoid duplicate questions.
+- Cover multiple lessons, not only one lesson.
 
 LESSON SUMMARIES:
 {json.dumps(lesson_summaries, ensure_ascii=False, indent=2)}
 """
-    raw = call_llm(llm, prompt)
-    data = extract_json_from_text(raw)
+    data = retry_llm_json(llm, prompt)
 
     if not isinstance(data, list):
         raise ValueError("Quiz output is not a JSON array.")
@@ -609,37 +782,109 @@ LESSON SUMMARIES:
             continue
 
         question = str(item.get("question", "")).strip()
+        q_type = str(item.get("type", "single_choice")).strip()
         options = item.get("options", [])
         correct_answer = str(item.get("correct_answer", "")).strip()
         explanation = str(item.get("explanation", "")).strip()
 
-        if not question or not isinstance(options, list) or len(options) != 4:
+        if not question or not isinstance(options, list):
             continue
-        if correct_answer not in options:
-            continue
+
+        if q_type == "true_false":
+            if options != ["True", "False"]:
+                continue
+            if correct_answer not in options:
+                continue
+        else:
+            q_type = "single_choice"
+            if len(options) != 4:
+                continue
+            if correct_answer not in options:
+                continue
 
         cleaned_questions.append(
             {
                 "question": question,
+                "type": q_type,
                 "options": options,
                 "correct_answer": correct_answer,
                 "explanation": explanation,
             }
         )
 
+    cleaned_questions = deduplicate_questions(cleaned_questions)
+
     if not cleaned_questions:
         raise ValueError("No valid quiz questions were generated.")
 
-    return cleaned_questions
+    return cleaned_questions[:quiz_questions]
 
 
 # =========================
 # HTML builder
 # =========================
+def build_question_card_html(question: Dict[str, Any], idx: int, prefix: str) -> str:
+    qid = f"{prefix}-q-{idx}"
+    question_text = html.escape(str(question.get("question", "")))
+    explanation = html.escape(str(question.get("explanation", "")))
+    options = question.get("options", [])
+    correct_answer = str(question.get("correct_answer", ""))
+
+    options_html = []
+    for opt_idx, option in enumerate(options):
+        option_escaped = html.escape(str(option))
+        input_id = f"{qid}-opt-{opt_idx}"
+        options_html.append(
+            f"""
+<label class="quiz-option" for="{input_id}">
+  <input type="radio" name="{qid}" id="{input_id}" value="{option_escaped}" data-correct="{html.escape(correct_answer)}" />
+  <span>{option_escaped}</span>
+</label>
+"""
+        )
+
+    return f"""
+<div class="quiz-card" data-question="{qid}">
+  <div class="quiz-question">{idx}. {question_text}</div>
+  <div class="quiz-options">
+    {''.join(options_html)}
+  </div>
+  <details class="quiz-explanation">
+    <summary>Show explanation</summary>
+    <p>{explanation}</p>
+  </details>
+</div>
+"""
+
+
+def build_glossary_html(glossary: List[Dict[str, Any]]) -> str:
+    if not glossary:
+        return "<p class='muted'>No glossary items generated.</p>"
+
+    items = []
+    for entry in glossary:
+        term = html.escape(str(entry.get("term", "")).strip())
+        definition = html.escape(str(entry.get("definition", "")).strip())
+        if not term or not definition:
+            continue
+        items.append(
+            f"""
+<div class="glossary-item">
+  <h3>{term}</h3>
+  <p>{definition}</p>
+</div>
+"""
+        )
+
+    return "\n".join(items) if items else "<p class='muted'>No glossary items generated.</p>"
+
+
 def build_course_html(
     outline: Dict[str, Any],
     lesson_payloads: List[Dict[str, Any]],
     docs_info: List[Dict[str, Any]],
+    pretest_data: List[Dict[str, Any]],
+    final_quiz_data: List[Dict[str, Any]],
 ) -> str:
     course_title = html.escape(outline.get("course_title", "Generated Course"))
     course_description = html.escape(outline.get("course_description", ""))
@@ -649,25 +894,46 @@ def build_course_html(
     if not isinstance(learning_outcomes, list):
         learning_outcomes = []
 
+    prerequisites = outline.get("prerequisites", [])
+    if not isinstance(prerequisites, list):
+        prerequisites = []
+
+    glossary = outline.get("glossary", [])
+    if not isinstance(glossary, list):
+        glossary = []
+
     overview_items = "\n".join(
         f"<li>{html.escape(str(item))}</li>" for item in learning_outcomes
-    )
+    ) or "<li>No learning outcomes generated.</li>"
+
+    prerequisites_items = "\n".join(
+        f"<li>{html.escape(str(item))}</li>" for item in prerequisites
+    ) or "<li>No prerequisites specified.</li>"
 
     docs_items = "\n".join(
         f"<li><strong>{html.escape(doc['name'])}</strong> — {doc['pages']} pages</li>"
         for doc in docs_info
-    )
+    ) or "<li>No documents listed.</li>"
 
-    toc_items = []
+    toc_items = [
+        '<li><a href="#overview">Overview</a></li>',
+        '<li><a href="#prerequisites">Prerequisites</a></li>',
+        '<li><a href="#pretest">Pre-test</a></li>',
+    ]
+
     for i, lesson in enumerate(outline.get("lessons", []), start=1):
         title = html.escape(lesson.get("title", f"Lesson {i}"))
         toc_items.append(f'<li><a href="#lesson-{i}">{title}</a></li>')
+
+    toc_items.extend([
+        '<li><a href="#glossary">Glossary</a></li>',
+        '<li><a href="#final-quiz">Final quiz</a></li>',
+    ])
     toc_html = "\n".join(toc_items)
 
     lesson_sections = []
     for i, payload in enumerate(lesson_payloads, start=1):
         raw_section = payload["lesson_html"]
-
         section_with_anchor = raw_section.replace(
             '<section class="lesson-section">',
             f'<section class="lesson-section" id="lesson-{i}">',
@@ -693,6 +959,20 @@ def build_course_html(
 
     lesson_sections_html = "\n\n".join(lesson_sections)
 
+    pretest_html = "".join(
+        build_question_card_html(q, idx + 1, "pretest")
+        for idx, q in enumerate(pretest_data)
+    )
+
+    final_quiz_html = "".join(
+        build_question_card_html(q, idx + 1, "final")
+        for idx, q in enumerate(final_quiz_data)
+    )
+
+    glossary_html = build_glossary_html(glossary)
+
+    lesson_count = len(outline.get("lessons", []))
+    estimated_minutes = estimate_duration_minutes(outline)
     generated_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
     return f"""<!DOCTYPE html>
@@ -702,112 +982,480 @@ def build_course_html(
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>{course_title}</title>
   <style>
+    :root {{
+      --bg: #0f172a;
+      --panel: #ffffff;
+      --text: #1f2937;
+      --muted: #64748b;
+      --line: #e2e8f0;
+      --primary: #2563eb;
+      --primary-soft: #dbeafe;
+      --success: #16a34a;
+      --shadow: 0 10px 30px rgba(15, 23, 42, 0.08);
+      --radius: 18px;
+    }}
+
+    * {{ box-sizing: border-box; }}
+
     body {{
-      font-family: Arial, Helvetica, sans-serif;
-      line-height: 1.6;
-      color: #1f2937;
-      background: #f8fafc;
       margin: 0;
-      padding: 0;
+      font-family: Arial, Helvetica, sans-serif;
+      background: #f8fafc;
+      color: var(--text);
+      line-height: 1.65;
     }}
-    .container {{
-      max-width: 980px;
-      margin: 0 auto;
-      padding: 32px 20px 64px;
+
+    .layout {{
+      display: grid;
+      grid-template-columns: 280px 1fr;
+      min-height: 100vh;
     }}
-    .hero {{
-      background: white;
-      border-radius: 16px;
-      padding: 28px;
-      box-shadow: 0 10px 30px rgba(0,0,0,0.06);
-      margin-bottom: 24px;
+
+    .sidebar {{
+      position: sticky;
+      top: 0;
+      align-self: start;
+      height: 100vh;
+      overflow: auto;
+      background: var(--bg);
+      color: #fff;
+      padding: 24px 18px;
     }}
-    .meta, .toc, .lesson-section, .lesson-sources {{
-      background: white;
-      border-radius: 16px;
-      padding: 24px;
-      box-shadow: 0 10px 30px rgba(0,0,0,0.05);
-      margin-bottom: 20px;
+
+    .sidebar h2 {{
+      margin: 0 0 8px;
+      font-size: 1.25rem;
     }}
-    h1, h2, h3 {{
-      color: #0f172a;
-    }}
-    h1 {{
+
+    .sidebar p {{
+      color: #cbd5e1;
       margin-top: 0;
-      font-size: 2rem;
+      font-size: 0.95rem;
     }}
-    ul {{
-      padding-left: 20px;
+
+    .sidebar ol {{
+      padding-left: 18px;
+      margin: 18px 0 0;
     }}
-    .muted {{
-      color: #64748b;
+
+    .sidebar li {{
+      margin-bottom: 10px;
     }}
-    a {{
-      color: #2563eb;
+
+    .sidebar a {{
+      color: #bfdbfe;
       text-decoration: none;
     }}
-    a:hover {{
+
+    .sidebar a:hover {{
       text-decoration: underline;
     }}
+
+    .content {{
+      padding: 28px;
+      max-width: 1100px;
+      width: 100%;
+      margin: 0 auto;
+    }}
+
+    .card {{
+      background: var(--panel);
+      border-radius: var(--radius);
+      padding: 24px;
+      box-shadow: var(--shadow);
+      margin-bottom: 20px;
+    }}
+
+    .hero {{
+      padding: 28px;
+    }}
+
+    .hero h1 {{
+      margin: 8px 0 12px;
+      font-size: 2.2rem;
+      line-height: 1.2;
+      color: #0f172a;
+    }}
+
     .badge {{
       display: inline-block;
-      background: #dbeafe;
+      background: var(--primary-soft);
       color: #1d4ed8;
       padding: 6px 10px;
       border-radius: 999px;
       font-size: 0.9rem;
       margin-right: 8px;
+      margin-bottom: 8px;
     }}
+
+    .grid {{
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 14px;
+      margin-top: 16px;
+    }}
+
+    .stat {{
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      padding: 14px;
+      background: #fff;
+    }}
+
+    .stat-label {{
+      color: var(--muted);
+      font-size: 0.9rem;
+    }}
+
+    .stat-value {{
+      margin-top: 6px;
+      font-size: 1.2rem;
+      font-weight: 700;
+      color: #0f172a;
+    }}
+
+    h2, h3 {{
+      color: #0f172a;
+    }}
+
+    ul, ol {{
+      padding-left: 20px;
+    }}
+
+    .muted {{
+      color: var(--muted);
+    }}
+
+    .lesson-section {{
+      background: #fff;
+      border-radius: var(--radius);
+      padding: 24px;
+      box-shadow: var(--shadow);
+      margin-bottom: 12px;
+    }}
+
+    .lesson-sources {{
+      margin-top: 18px;
+      padding-top: 16px;
+      border-top: 1px solid var(--line);
+    }}
+
+    .glossary-grid {{
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+      gap: 14px;
+    }}
+
+    .glossary-item {{
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      padding: 16px;
+      background: #fff;
+    }}
+
+    .quiz-actions {{
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-bottom: 18px;
+    }}
+
+    button {{
+      border: 0;
+      background: var(--primary);
+      color: #fff;
+      padding: 10px 14px;
+      border-radius: 12px;
+      cursor: pointer;
+      font-size: 0.95rem;
+    }}
+
+    button.secondary {{
+      background: #334155;
+    }}
+
+    .quiz-card {{
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      padding: 18px;
+      margin-bottom: 14px;
+      background: #fff;
+    }}
+
+    .quiz-question {{
+      font-weight: 700;
+      margin-bottom: 10px;
+    }}
+
+    .quiz-options {{
+      display: grid;
+      gap: 10px;
+    }}
+
+    .quiz-option {{
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 10px 12px;
+      cursor: pointer;
+      transition: 0.2s ease;
+    }}
+
+    .quiz-option:hover {{
+      background: #f8fafc;
+    }}
+
+    .quiz-option.correct {{
+      border-color: #86efac;
+      background: #f0fdf4;
+    }}
+
+    .quiz-option.incorrect {{
+      border-color: #fca5a5;
+      background: #fef2f2;
+    }}
+
+    .quiz-explanation {{
+      margin-top: 12px;
+      color: var(--muted);
+    }}
+
+    .quiz-results {{
+      margin-top: 14px;
+      padding: 14px;
+      border-radius: 14px;
+      background: #eff6ff;
+      color: #1e3a8a;
+      display: none;
+    }}
+
+    .progress-wrap {{
+      height: 10px;
+      border-radius: 999px;
+      background: #e2e8f0;
+      overflow: hidden;
+      margin-top: 12px;
+    }}
+
+    .progress-bar {{
+      height: 100%;
+      width: 0%;
+      background: linear-gradient(90deg, #2563eb, #38bdf8);
+      transition: width 0.3s ease;
+    }}
+
     .footer {{
       margin-top: 28px;
-      color: #64748b;
+      color: var(--muted);
       font-size: 0.95rem;
       text-align: center;
     }}
-    code {{
-      background: #f1f5f9;
-      padding: 2px 6px;
-      border-radius: 6px;
+
+    @media (max-width: 980px) {{
+      .layout {{
+        grid-template-columns: 1fr;
+      }}
+
+      .sidebar {{
+        position: relative;
+        height: auto;
+      }}
+
+      .content {{
+        padding: 18px;
+      }}
     }}
   </style>
 </head>
 <body>
-  <div class="container">
-    <div class="hero">
-      <span class="badge">AI-generated course</span>
-      <span class="badge">HTML</span>
-      <h1>{course_title}</h1>
-      <p>{course_description}</p>
-      <p><strong>Target audience:</strong> {target_audience}</p>
-    </div>
-
-    <div class="meta">
-      <h2>Learning outcomes</h2>
-      <ul>
-        {overview_items}
-      </ul>
-    </div>
-
-    <div class="meta">
-      <h2>Documents used</h2>
-      <ul>
-        {docs_items}
-      </ul>
-    </div>
-
-    <div class="toc">
-      <h2>Course contents</h2>
+  <div class="layout">
+    <aside class="sidebar">
+      <h2>{course_title}</h2>
+      <p>AI-generated course from source documents</p>
       <ol>
         {toc_html}
       </ol>
-    </div>
+    </aside>
 
-    {lesson_sections_html}
+    <main class="content">
+      <section class="card hero" id="overview">
+        <span class="badge">AI-generated course</span>
+        <span class="badge">HTML</span>
+        <span class="badge">{lesson_count} lessons</span>
+        <h1>{course_title}</h1>
+        <p>{course_description}</p>
+        <p><strong>Target audience:</strong> {target_audience}</p>
 
-    <div class="footer">
-      Generated on {generated_at}
-    </div>
+        <div class="grid">
+          <div class="stat">
+            <div class="stat-label">Estimated duration</div>
+            <div class="stat-value">{estimated_minutes} minutes</div>
+          </div>
+          <div class="stat">
+            <div class="stat-label">Lessons</div>
+            <div class="stat-value">{lesson_count}</div>
+          </div>
+          <div class="stat">
+            <div class="stat-label">Documents used</div>
+            <div class="stat-value">{len(docs_info)}</div>
+          </div>
+          <div class="stat">
+            <div class="stat-label">Final quiz questions</div>
+            <div class="stat-value">{len(final_quiz_data)}</div>
+          </div>
+        </div>
+      </section>
+
+      <section class="card" id="prerequisites">
+        <h2>Prerequisites</h2>
+        <ul>
+          {prerequisites_items}
+        </ul>
+      </section>
+
+      <section class="card">
+        <h2>Learning outcomes</h2>
+        <ul>
+          {overview_items}
+        </ul>
+      </section>
+
+      <section class="card">
+        <h2>Documents used</h2>
+        <ul>
+          {docs_items}
+        </ul>
+      </section>
+
+      <section class="card" id="pretest">
+        <h2>Pre-test</h2>
+        <p class="muted">Use this short diagnostic quiz before starting the lessons.</p>
+        <div class="quiz-actions">
+          <button type="button" onclick="gradeQuiz('pretest')">Check pre-test</button>
+          <button type="button" class="secondary" onclick="resetQuiz('pretest')">Reset</button>
+        </div>
+        <div class="progress-wrap"><div class="progress-bar" id="pretest-progress"></div></div>
+        <div class="quiz-results" id="pretest-results"></div>
+        {pretest_html}
+      </section>
+
+      {lesson_sections_html}
+
+      <section class="card" id="glossary">
+        <h2>Glossary</h2>
+        <div class="glossary-grid">
+          {glossary_html}
+        </div>
+      </section>
+
+      <section class="card" id="final-quiz">
+        <h2>Final quiz</h2>
+        <p class="muted">Complete the final quiz to check knowledge gained through the course.</p>
+        <div class="quiz-actions">
+          <button type="button" onclick="gradeQuiz('final')">Check final quiz</button>
+          <button type="button" class="secondary" onclick="resetQuiz('final')">Reset</button>
+        </div>
+        <div class="progress-wrap"><div class="progress-bar" id="final-progress"></div></div>
+        <div class="quiz-results" id="final-results"></div>
+        {final_quiz_html}
+      </section>
+
+      <div class="footer">
+        Generated on {generated_at}
+      </div>
+    </main>
   </div>
+
+  <script>
+    function getQuizCards(prefix) {{
+      return Array.from(document.querySelectorAll(`[data-question^="${{prefix}}-q-"]`));
+    }}
+
+    function updateProgress(prefix) {{
+      const cards = getQuizCards(prefix);
+      const answered = cards.filter(card => card.querySelector('input[type="radio"]:checked')).length;
+      const total = cards.length || 1;
+      const percent = Math.round((answered / total) * 100);
+      const bar = document.getElementById(`${{prefix}}-progress`);
+      if (bar) {{
+        bar.style.width = `${{percent}}%`;
+      }}
+    }}
+
+    function gradeQuiz(prefix) {{
+      const cards = getQuizCards(prefix);
+      let correct = 0;
+
+      cards.forEach(card => {{
+        const selected = card.querySelector('input[type="radio"]:checked');
+        const options = card.querySelectorAll('.quiz-option');
+
+        options.forEach(opt => opt.classList.remove('correct', 'incorrect'));
+
+        if (!selected) return;
+
+        const correctAnswer = selected.getAttribute('data-correct');
+        const optionLabels = card.querySelectorAll('.quiz-option');
+
+        optionLabels.forEach(label => {{
+          const input = label.querySelector('input');
+          if (!input) return;
+
+          if (input.value === correctAnswer) {{
+            label.classList.add('correct');
+          }}
+
+          if (input.checked && input.value !== correctAnswer) {{
+            label.classList.add('incorrect');
+          }}
+        }});
+
+        if (selected.value === correctAnswer) {{
+          correct += 1;
+        }}
+      }});
+
+      const results = document.getElementById(`${{prefix}}-results`);
+      if (results) {{
+        const total = cards.length;
+        const percent = total ? Math.round((correct / total) * 100) : 0;
+        results.style.display = 'block';
+        results.innerHTML = `<strong>Score:</strong> ${{correct}} / ${{total}} (${{percent}}%)`;
+      }}
+
+      updateProgress(prefix);
+    }}
+
+    function resetQuiz(prefix) {{
+      const cards = getQuizCards(prefix);
+      cards.forEach(card => {{
+        card.querySelectorAll('input[type="radio"]').forEach(input => input.checked = false);
+        card.querySelectorAll('.quiz-option').forEach(opt => opt.classList.remove('correct', 'incorrect'));
+      }});
+
+      const results = document.getElementById(`${{prefix}}-results`);
+      if (results) {{
+        results.style.display = 'none';
+        results.innerHTML = '';
+      }}
+
+      updateProgress(prefix);
+    }}
+
+    document.addEventListener('change', (event) => {{
+      const target = event.target;
+      if (target.matches('input[type="radio"]')) {{
+        const name = target.name || '';
+        if (name.startsWith('pretest-')) updateProgress('pretest');
+        if (name.startsWith('final-')) updateProgress('final');
+      }}
+    }});
+
+    updateProgress('pretest');
+    updateProgress('final');
+  </script>
 </body>
 </html>
 """
@@ -830,6 +1478,72 @@ def save_quiz_json(output_dir: str, quiz_data: List[Dict[str, Any]]) -> str:
     return str(path)
 
 
+def save_pretest_json(output_dir: str, pretest_data: List[Dict[str, Any]]) -> str:
+    path = Path(output_dir) / "pretest.json"
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(pretest_data, f, ensure_ascii=False, indent=2)
+    return str(path)
+
+
+def save_lesson_summaries(output_dir: str, lesson_payloads: List[Dict[str, Any]], outline: Dict[str, Any]) -> str:
+    path = Path(output_dir) / "lesson_summaries.json"
+    lessons = outline.get("lessons", [])
+    payload = []
+
+    for idx, lesson in enumerate(lessons):
+        lesson_payload = lesson_payloads[idx] if idx < len(lesson_payloads) else {}
+        payload.append(
+            {
+                "lesson_number": idx + 1,
+                "title": lesson.get("title", ""),
+                "goal": lesson.get("goal", ""),
+                "key_points": lesson.get("key_points", []),
+                "summary": lesson_payload.get("summary", ""),
+                "key_takeaways": lesson_payload.get("key_takeaways", []),
+                "sources": lesson_payload.get("sources", []),
+            }
+        )
+
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False, indent=2)
+
+    return str(path)
+
+
+def save_generation_report(
+    output_dir: str,
+    outline: Dict[str, Any],
+    docs_info: List[Dict[str, Any]],
+    pretest_data: List[Dict[str, Any]],
+    quiz_data: List[Dict[str, Any]],
+    args: argparse.Namespace,
+    elapsed_seconds: float,
+) -> str:
+    path = Path(output_dir) / "generation_report.json"
+    report = {
+        "generated_at": datetime.now().isoformat(),
+        "model": args.model,
+        "embedding_model": args.embedding_model,
+        "difficulty": args.difficulty,
+        "retrieval_type": args.retrieval_type,
+        "top_k": args.top_k,
+        "chunk_size": args.chunk_size,
+        "chunk_overlap": args.chunk_overlap,
+        "documents_count": len(docs_info),
+        "documents": docs_info,
+        "lessons_count": len(outline.get("lessons", [])),
+        "pretest_questions_count": len(pretest_data),
+        "final_quiz_questions_count": len(quiz_data),
+        "estimated_duration_minutes": estimate_duration_minutes(outline),
+        "elapsed_seconds": round(elapsed_seconds, 2),
+    }
+
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(report, f, ensure_ascii=False, indent=2)
+
+    return str(path)
+
+
 def save_course_metadata(
     output_dir: str,
     outline: Dict[str, Any],
@@ -842,6 +1556,7 @@ def save_course_metadata(
         "model": args.model,
         "embedding_model": args.embedding_model,
         "difficulty": args.difficulty,
+        "retrieval_type": args.retrieval_type,
         "top_k": args.top_k,
         "chunk_size": args.chunk_size,
         "chunk_overlap": args.chunk_overlap,
@@ -924,6 +1639,7 @@ def main() -> None:
                 lesson_title=lesson_title,
                 key_points=key_points,
                 top_k=args.top_k,
+                retrieval_type=args.retrieval_type,
             )
 
             lesson_payload = generate_lesson_html_section(
@@ -942,7 +1658,21 @@ def main() -> None:
         sys.exit(1)
 
     try:
-        print("--- Generating quiz... ---")
+        print("--- Generating pre-test... ---")
+        pretest_data = generate_pretest(
+            llm=llm,
+            outline=outline,
+            pretest_questions=args.pretest_questions,
+            difficulty=args.difficulty,
+        )
+        log_message(args.log_dir, f"Pre-test generated successfully with {len(pretest_data)} questions")
+    except Exception as e:
+        print(f"(X) Failed to generate pre-test: {e}")
+        log_message(args.log_dir, f"Pre-test generation error: {e}")
+        sys.exit(1)
+
+    try:
+        print("--- Generating final quiz... ---")
         quiz_data = generate_quiz(
             llm=llm,
             outline=outline,
@@ -962,23 +1692,40 @@ def main() -> None:
             outline=outline,
             lesson_payloads=lesson_payloads,
             docs_info=docs_info,
+            pretest_data=pretest_data,
+            final_quiz_data=quiz_data,
         )
 
         course_path = save_course_html(args.output_dir, course_html)
         quiz_path = save_quiz_json(args.output_dir, quiz_data)
+        pretest_path = save_pretest_json(args.output_dir, pretest_data)
         metadata_path = save_course_metadata(args.output_dir, outline, docs_info, args)
+        summaries_path = save_lesson_summaries(args.output_dir, lesson_payloads, outline)
 
         elapsed = time.time() - started
+        report_path = save_generation_report(
+            output_dir=args.output_dir,
+            outline=outline,
+            docs_info=docs_info,
+            pretest_data=pretest_data,
+            quiz_data=quiz_data,
+            args=args,
+            elapsed_seconds=elapsed,
+        )
 
         print("\n[SUCCESS] Generation complete!")
-        print(f"Course HTML: {course_path}")
-        print(f"Quiz JSON:   {quiz_path}")
-        print(f"Metadata:    {metadata_path}")
-        print(f"Time:        {elapsed:.2f}s")
+        print(f"Course HTML:        {course_path}")
+        print(f"Pre-test JSON:      {pretest_path}")
+        print(f"Final quiz JSON:    {quiz_path}")
+        print(f"Lesson summaries:   {summaries_path}")
+        print(f"Metadata:           {metadata_path}")
+        print(f"Report:             {report_path}")
+        print(f"Time:               {elapsed:.2f}s")
 
         log_message(
             args.log_dir,
-            f"Generation complete. course={course_path}, quiz={quiz_path}, metadata={metadata_path}, elapsed={elapsed:.2f}s",
+            f"Generation complete. course={course_path}, pretest={pretest_path}, quiz={quiz_path}, "
+            f"summaries={summaries_path}, metadata={metadata_path}, report={report_path}, elapsed={elapsed:.2f}s",
         )
     except Exception as e:
         print(f"(X) Failed to save outputs: {e}")
