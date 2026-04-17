@@ -11,7 +11,7 @@ from datetime import datetime
 from typing import Any, Dict, List, Tuple
 
 from dotenv import load_dotenv
-from langchain_community.document_loaders import PyPDFLoader
+from langchain_community.document_loaders import PyPDFLoader, TextLoader
 from langchain_community.vectorstores import FAISS
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_ollama import OllamaLLM
@@ -41,6 +41,10 @@ DEFAULT_RETRIEVAL_TYPE = "similarity"
 DEFAULT_LANGUAGE = "en"
 DEFAULT_MAX_PREVIEW_CHARS_PER_FILE = 6000
 DEFAULT_OUTPUT_PREFIX = ""
+DEFAULT_MAX_LESSONS = 7
+DEFAULT_MIN_LESSONS = 4
+
+SUPPORTED_EXTENSIONS = {".pdf", ".txt", ".md"}
 
 
 # =========================
@@ -48,7 +52,7 @@ DEFAULT_OUTPUT_PREFIX = ""
 # =========================
 def ensure_directories(docs_path: str, db_path: str, manifest_file: str, output_dir: str, log_dir: str) -> None:
     docs = Path(docs_path)
-    if docs.suffix.lower() == ".pdf":
+    if docs.suffix.lower() in SUPPORTED_EXTENSIONS:
         docs.parent.mkdir(parents=True, exist_ok=True)
     else:
         docs.mkdir(parents=True, exist_ok=True)
@@ -61,7 +65,7 @@ def ensure_directories(docs_path: str, db_path: str, manifest_file: str, output_
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Generate HTML course and quizzes from PDF documents using local LLM + RAG"
+        description="Generate HTML course and quizzes from local documents using LLM + RAG"
     )
     parser.add_argument("--docs-path", default=os.getenv("DOCS_PATH", DEFAULT_DOCS_PATH))
     parser.add_argument("--db", default=os.getenv("DB_FAISS_PATH", DEFAULT_DB_FAISS_PATH))
@@ -80,7 +84,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--language", choices=["en", "ru"], default=os.getenv("LANGUAGE", DEFAULT_LANGUAGE))
     parser.add_argument("--max-preview-chars-per-file", type=int, default=int(os.getenv("MAX_PREVIEW_CHARS_PER_FILE", DEFAULT_MAX_PREVIEW_CHARS_PER_FILE)))
     parser.add_argument("--output-prefix", default=os.getenv("OUTPUT_PREFIX", DEFAULT_OUTPUT_PREFIX))
+    parser.add_argument("--min-lessons", type=int, default=int(os.getenv("MIN_LESSONS", DEFAULT_MIN_LESSONS)))
+    parser.add_argument("--max-lessons", type=int, default=int(os.getenv("MAX_LESSONS", DEFAULT_MAX_LESSONS)))
     parser.add_argument("--disable-review-pass", action="store_true")
+    parser.add_argument("--skip-pretest", action="store_true")
+    parser.add_argument("--skip-final-quiz", action="store_true")
+    parser.add_argument("--include-source-excerpts", action="store_true")
     parser.add_argument("--rebuild", action="store_true")
     return parser.parse_args()
 
@@ -314,9 +323,9 @@ def build_output_path(output_dir: str, filename: str, output_prefix: str = "") -
 
 
 # =========================
-# PDF collection + manifest
+# Document collection + manifest
 # =========================
-def collect_pdf_files(docs_path: str) -> List[Path]:
+def collect_source_files(docs_path: str) -> List[Path]:
     path = Path(docs_path)
 
     if not path.exists():
@@ -324,17 +333,17 @@ def collect_pdf_files(docs_path: str) -> List[Path]:
         sys.exit(1)
 
     if path.is_file():
-        if path.suffix.lower() != ".pdf":
-            print(f"(X) Error: '{docs_path}' is not a PDF.")
+        if path.suffix.lower() not in SUPPORTED_EXTENSIONS:
+            print(f"(X) Error: '{docs_path}' is not a supported file type.")
             sys.exit(1)
         return [path]
 
-    pdf_files = sorted([p for p in path.glob("*.pdf") if p.is_file()])
-    if not pdf_files:
-        print(f"(X) Error: No PDF files found in '{docs_path}'.")
+    source_files = sorted([p for p in path.iterdir() if p.is_file() and p.suffix.lower() in SUPPORTED_EXTENSIONS])
+    if not source_files:
+        print(f"(X) Error: No supported files found in '{docs_path}'.")
         sys.exit(1)
 
-    return pdf_files
+    return source_files
 
 
 def file_fingerprint(file_path: Path) -> str:
@@ -343,15 +352,15 @@ def file_fingerprint(file_path: Path) -> str:
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
-def build_manifest_data(pdf_files: List[Path]) -> Dict[str, Any]:
+def build_manifest_data(source_files: List[Path]) -> Dict[str, Any]:
     return {
         "files": [
             {
-                "name": pdf.name,
-                "path": str(pdf.resolve()),
-                "fingerprint": file_fingerprint(pdf),
+                "name": f.name,
+                "path": str(f.resolve()),
+                "fingerprint": file_fingerprint(f),
             }
-            for pdf in pdf_files
+            for f in source_files
         ]
     }
 
@@ -360,7 +369,6 @@ def load_manifest(manifest_file: str) -> Dict[str, Any]:
     path = Path(manifest_file)
     if not path.exists():
         return {}
-
     try:
         with open(path, "r", encoding="utf-8") as f:
             return json.load(f)
@@ -373,58 +381,68 @@ def save_manifest(manifest_file: str, data: Dict[str, Any]) -> None:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
 
-def is_index_stale(pdf_files: List[Path], db_path: str, manifest_file: str) -> bool:
+def is_index_stale(source_files: List[Path], db_path: str, manifest_file: str) -> bool:
     db_dir = Path(db_path)
     index_file = db_dir / "index.faiss"
     meta_file = db_dir / "index.pkl"
 
-    if not db_dir.exists():
-        return True
-    if not index_file.exists() or not meta_file.exists():
+    if not db_dir.exists() or not index_file.exists() or not meta_file.exists():
         return True
 
-    current_manifest = build_manifest_data(pdf_files)
+    current_manifest = build_manifest_data(source_files)
     saved_manifest = load_manifest(manifest_file)
     return current_manifest != saved_manifest
+
+
+def load_file_documents(file_path: Path) -> List[Any]:
+    suffix = file_path.suffix.lower()
+    if suffix == ".pdf":
+        loader = PyPDFLoader(str(file_path))
+        docs = loader.load()
+    elif suffix in {".txt", ".md"}:
+        loader = TextLoader(str(file_path), encoding="utf-8")
+        docs = loader.load()
+    else:
+        raise ValueError(f"Unsupported file type: {suffix}")
+
+    for doc in docs:
+        doc.metadata["document_name"] = file_path.name
+        doc.metadata["document_path"] = str(file_path.resolve())
+        doc.metadata["document_type"] = suffix.lstrip(".")
+    return docs
 
 
 # =========================
 # Vector store
 # =========================
 def build_vectorstore(
-    pdf_files: List[Path],
+    source_files: List[Path],
     db_path: str,
     manifest_file: str,
     embedding_model: str,
     chunk_size: int,
     chunk_overlap: int,
 ) -> Tuple[FAISS, List[Dict[str, Any]]]:
-    print("--- Processing PDF files and building vector DB... ---")
+    print("--- Processing source files and building vector DB... ---")
     all_documents = []
     docs_info = []
 
-    for pdf_path in pdf_files:
-        loader = PyPDFLoader(str(pdf_path))
-        documents = loader.load()
-
+    for file_path in source_files:
+        documents = load_file_documents(file_path)
         if not documents:
-            print(f"(!) Skipping '{pdf_path.name}': no text extracted.")
+            print(f"(!) Skipping '{file_path.name}': no text extracted.")
             continue
 
         docs_info.append({
-            "name": pdf_path.name,
-            "path": str(pdf_path.resolve()),
+            "name": file_path.name,
+            "path": str(file_path.resolve()),
             "pages": len(documents),
+            "type": file_path.suffix.lower().lstrip("."),
         })
-
-        for doc in documents:
-            doc.metadata["document_name"] = pdf_path.name
-            doc.metadata["document_path"] = str(pdf_path.resolve())
-
         all_documents.extend(documents)
 
     if not all_documents:
-        raise ValueError("No text could be extracted from provided PDF files.")
+        raise ValueError("No text could be extracted from provided files.")
 
     splitter = RecursiveCharacterTextSplitter(
         chunk_size=chunk_size,
@@ -433,7 +451,7 @@ def build_vectorstore(
     splits = splitter.split_documents(all_documents)
 
     if not splits:
-        raise ValueError("No chunks were created from the PDF files.")
+        raise ValueError("No chunks were created from source files.")
 
     for idx, split in enumerate(splits):
         split.metadata["chunk_id"] = idx
@@ -441,33 +459,33 @@ def build_vectorstore(
     embeddings = HuggingFaceEmbeddings(model_name=embedding_model)
     vectorstore = FAISS.from_documents(documents=splits, embedding=embeddings)
     vectorstore.save_local(db_path)
-    save_manifest(manifest_file, build_manifest_data(pdf_files))
-
+    save_manifest(manifest_file, build_manifest_data(source_files))
     return vectorstore, docs_info
 
 
-def load_or_create_vectorstore(args: argparse.Namespace, pdf_files: List[Path]) -> Tuple[FAISS, List[Dict[str, Any]]]:
-    should_rebuild = args.rebuild or is_index_stale(pdf_files, args.db, args.manifest_file)
+def load_or_create_vectorstore(args: argparse.Namespace, source_files: List[Path]) -> Tuple[FAISS, List[Dict[str, Any]]]:
+    should_rebuild = args.rebuild or is_index_stale(source_files, args.db, args.manifest_file)
     docs_info = []
 
-    for pdf in pdf_files:
+    for f in source_files:
         try:
-            page_count = len(PyPDFLoader(str(pdf)).load())
+            docs_count = len(load_file_documents(f))
         except Exception:
-            page_count = 0
+            docs_count = 0
         docs_info.append({
-            "name": pdf.name,
-            "path": str(pdf.resolve()),
-            "pages": page_count,
+            "name": f.name,
+            "path": str(f.resolve()),
+            "pages": docs_count,
+            "type": f.suffix.lower().lstrip("."),
         })
 
     if should_rebuild:
         if args.rebuild:
             print("(!) Force rebuild requested.")
         else:
-            print("(!) Document set changed or index missing. Rebuilding vector DB...")
+            print("(!) Source file set changed or index missing. Rebuilding vector DB...")
         return build_vectorstore(
-            pdf_files=pdf_files,
+            source_files=source_files,
             db_path=args.db,
             manifest_file=args.manifest_file,
             embedding_model=args.embedding_model,
@@ -478,16 +496,12 @@ def load_or_create_vectorstore(args: argparse.Namespace, pdf_files: List[Path]) 
     print("--- Loading existing vector DB... ---")
     embeddings = HuggingFaceEmbeddings(model_name=args.embedding_model)
     try:
-        vectorstore = FAISS.load_local(
-            args.db,
-            embeddings,
-            allow_dangerous_deserialization=True,
-        )
+        vectorstore = FAISS.load_local(args.db, embeddings, allow_dangerous_deserialization=True)
         return vectorstore, docs_info
     except Exception:
         print("(!) Existing vector DB is corrupted or incompatible. Rebuilding...")
         return build_vectorstore(
-            pdf_files=pdf_files,
+            source_files=source_files,
             db_path=args.db,
             manifest_file=args.manifest_file,
             embedding_model=args.embedding_model,
@@ -505,26 +519,23 @@ def call_llm(llm: OllamaLLM, prompt: str) -> str:
 
 
 def get_language_instruction(language: str) -> str:
-    if language == "ru":
-        return "Generate all content in Russian."
-    return "Generate all content in English."
+    return "Generate all content in Russian." if language == "ru" else "Generate all content in English."
 
 
-def get_combined_preview_text(pdf_files: List[Path], max_chars_per_file: int = 6000) -> str:
+def get_combined_preview_text(source_files: List[Path], max_chars_per_file: int = 6000) -> str:
     parts = []
-    for pdf_path in pdf_files:
+    for file_path in source_files:
         try:
-            pages = PyPDFLoader(str(pdf_path)).load()
-            joined = "\n".join(page.page_content for page in pages)
-            joined = clean_text(joined)
-            joined = joined[:max_chars_per_file]
-            parts.append(f"\n===== DOCUMENT: {pdf_path.name} =====\n{joined}\n")
+            docs = load_file_documents(file_path)
+            joined = "\n".join(doc.page_content for doc in docs)
+            joined = clean_text(joined)[:max_chars_per_file]
+            parts.append(f"\n===== DOCUMENT: {file_path.name} =====\n{joined}\n")
         except Exception as exc:
-            parts.append(f"\n===== DOCUMENT: {pdf_path.name} =====\nFailed to read document: {exc}\n")
+            parts.append(f"\n===== DOCUMENT: {file_path.name} =====\nFailed to read document: {exc}\n")
     return "\n".join(parts)
 
 
-def generate_course_outline(llm: OllamaLLM, preview_text: str, difficulty: str, language: str) -> Dict[str, Any]:
+def generate_course_outline(llm: OllamaLLM, preview_text: str, difficulty: str, language: str, min_lessons: int, max_lessons: int) -> Dict[str, Any]:
     prompt = f"""
 You are an expert instructional designer.
 
@@ -560,7 +571,7 @@ Requirements:
 }}
 
 Rules:
-- Create 4 to 7 lessons.
+- Create {min_lessons} to {max_lessons} lessons.
 - Each lesson should have 3 to 5 key points.
 - Create 3 to 8 glossary items.
 - Do not invent topics that are not supported by the documents.
@@ -574,7 +585,7 @@ DOCUMENT CONTENT:
     return validate_outline(data)
 
 
-def review_outline(llm: OllamaLLM, outline: Dict[str, Any], language: str) -> Dict[str, Any]:
+def review_outline(llm: OllamaLLM, outline: Dict[str, Any], language: str, min_lessons: int, max_lessons: int) -> Dict[str, Any]:
     prompt = f"""
 You are reviewing a generated training course outline.
 
@@ -588,7 +599,7 @@ Your job:
 - make lesson progression more logical
 - keep only information grounded in the source-derived outline
 - do not add unrelated topics
-- preserve 4 to 7 lessons
+- preserve {min_lessons} to {max_lessons} lessons
 
 INPUT OUTLINE:
 {json.dumps(outline, ensure_ascii=False, indent=2)}
@@ -614,22 +625,23 @@ def generate_lesson_html_section(
     key_points: List[str],
     retrieved_docs: List[Any],
     language: str,
+    include_source_excerpts: bool,
 ) -> Dict[str, Any]:
     context_blocks = []
     sources = []
+    source_excerpts = []
 
     for doc in retrieved_docs:
         page = doc.metadata.get("page")
         page_num = page + 1 if isinstance(page, int) else "N/A"
         doc_name = doc.metadata.get("document_name", "unknown")
         chunk_id = doc.metadata.get("chunk_id", "N/A")
+        excerpt = clean_text(doc.page_content)[:300]
         sources.append({"document_name": doc_name, "page": page_num, "chunk_id": chunk_id})
-        context_blocks.append(
-            f"[Document: {doc_name} | Page: {page_num} | Chunk: {chunk_id}]\n{doc.page_content}"
-        )
+        source_excerpts.append({"document_name": doc_name, "page": page_num, "chunk_id": chunk_id, "excerpt": excerpt})
+        context_blocks.append(f"[Document: {doc_name} | Page: {page_num} | Chunk: {chunk_id}]\n{doc.page_content}")
 
     context_text = "\n\n".join(context_blocks)
-
     prompt = f"""
 You are creating one lesson section for an HTML training course.
 
@@ -670,25 +682,24 @@ CONTEXT:
         data = retry_llm_json(llm, prompt)
         if not isinstance(data, dict):
             raise ValueError("Lesson JSON is not an object.")
-
         lesson_html = sanitize_lesson_html(str(data.get("lesson_html", "")).strip())
         summary = str(data.get("summary", "")).strip()
         key_takeaways = data.get("key_takeaways", [])
-
         if not lesson_html:
             raise ValueError("Empty lesson HTML.")
         if not isinstance(key_takeaways, list):
             key_takeaways = []
-
         return {
             "lesson_html": lesson_html,
             "summary": summary or lesson_goal,
             "key_takeaways": [str(x).strip() for x in key_takeaways if str(x).strip()][:5],
             "sources": deduplicate_sources(sources),
+            "source_excerpts": source_excerpts[: min(3, len(source_excerpts))] if include_source_excerpts else [],
         }
     except Exception:
         fallback = fallback_lesson_html(lesson_title, lesson_goal, key_points, retrieved_docs)
         fallback["sources"] = deduplicate_sources(sources)
+        fallback["source_excerpts"] = source_excerpts[: min(3, len(source_excerpts))] if include_source_excerpts else []
         return fallback
 
 
@@ -726,13 +737,11 @@ COURSE OUTLINE:
     data = retry_llm_json(llm, prompt)
     if not isinstance(data, list):
         raise ValueError("Pre-test output is not a JSON array.")
-
     cleaned = []
     for item in data:
         validated = validate_question_item(item, allow_true_false=False)
         if validated:
             cleaned.append(validated)
-
     cleaned = deduplicate_questions(cleaned)
     if not cleaned:
         raise ValueError("No valid pre-test questions were generated.")
@@ -971,7 +980,7 @@ def build_markdown_summary(outline: Dict[str, Any], docs_info: List[Dict[str, An
         lines.append("")
 
     lines.append(f"## {'Документы' if is_ru else 'Documents'}")
-    lines.extend([f"- {doc['name']} ({doc['pages']} pages)" for doc in docs_info])
+    lines.extend([f"- {doc['name']} ({doc['pages']} sections, {doc.get('type', 'unknown')})" for doc in docs_info])
     lines.append("")
 
     lines.append(f"## {'Уроки' if is_ru else 'Lessons'}")
@@ -997,6 +1006,7 @@ def build_course_html(
     pretest_data: List[Dict[str, Any]],
     final_quiz_data: List[Dict[str, Any]],
     language: str,
+    include_source_excerpts: bool,
 ) -> str:
     is_ru = language == "ru"
 
@@ -1013,26 +1023,23 @@ def build_course_html(
         "lessons": "Уроки" if is_ru else "Lessons",
         "documents_count": "Документы" if is_ru else "Documents used",
         "final_questions": "Вопросы финального теста" if is_ru else "Final quiz questions",
-        "pretest_intro": "Пройдите короткий диагностический тест перед изучением уроков."
-            if is_ru else "Use this short diagnostic quiz before starting the lessons.",
-        "final_intro": "Пройдите итоговый тест, чтобы проверить усвоение материала."
-            if is_ru else "Complete the final quiz to check knowledge gained through the course.",
+        "pretest_intro": "Пройдите короткий диагностический тест перед изучением уроков." if is_ru else "Use this short diagnostic quiz before starting the lessons.",
+        "final_intro": "Пройдите итоговый тест, чтобы проверить усвоение материала." if is_ru else "Complete the final quiz to check knowledge gained through the course.",
         "check_pretest": "Проверить входной тест" if is_ru else "Check pre-test",
         "check_final": "Проверить итоговый тест" if is_ru else "Check final quiz",
         "reset": "Сбросить" if is_ru else "Reset",
         "sources_used": "Использованные источники" if is_ru else "Sources used",
+        "source_excerpts": "Фрагменты источников" if is_ru else "Source excerpts",
         "generated_on": "Сгенерировано" if is_ru else "Generated on",
         "minutes": "минут" if is_ru else "minutes",
         "ai_generated_course": "Курс, сгенерированный ИИ" if is_ru else "AI-generated course",
-        "from_source_docs": "Курс создан на основе исходных документов"
-            if is_ru else "AI-generated course from source documents",
+        "from_source_docs": "Курс создан на основе исходных документов" if is_ru else "AI-generated course from source documents",
         "score": "Результат" if is_ru else "Score",
     }
 
     course_title = html.escape(outline.get("course_title", "Generated Course"))
     course_description = html.escape(outline.get("course_description", ""))
     target_audience = html.escape(outline.get("target_audience", ""))
-
     learning_outcomes = outline.get("learning_outcomes", [])
     prerequisites = outline.get("prerequisites", [])
     glossary = outline.get("glossary", [])
@@ -1040,48 +1047,52 @@ def build_course_html(
     overview_items = "\n".join(f"<li>{html.escape(str(item))}</li>" for item in learning_outcomes) or "<li>No learning outcomes generated.</li>"
     prerequisites_items = "\n".join(f"<li>{html.escape(str(item))}</li>" for item in prerequisites) or "<li>No prerequisites specified.</li>"
     docs_items = "\n".join(
-        f"<li><strong>{html.escape(doc['name'])}</strong> — {doc['pages']} pages</li>"
+        f"<li><strong>{html.escape(doc['name'])}</strong> — {doc['pages']} sections — {html.escape(doc.get('type', 'unknown'))}</li>"
         for doc in docs_info
     ) or "<li>No documents listed.</li>"
 
     toc_items = [
         f'<li><a href="#overview">{labels["overview"]}</a></li>',
         f'<li><a href="#prerequisites">{labels["prerequisites"]}</a></li>',
-        f'<li><a href="#pretest">{labels["pretest"]}</a></li>',
     ]
-
+    if pretest_data:
+        toc_items.append(f'<li><a href="#pretest">{labels["pretest"]}</a></li>')
     for i, lesson in enumerate(outline.get("lessons", []), start=1):
         title = html.escape(lesson.get("title", f"Lesson {i}"))
         toc_items.append(f'<li><a href="#lesson-{i}">{title}</a></li>')
-
-    toc_items.extend([
-        f'<li><a href="#glossary">{labels["glossary"]}</a></li>',
-        f'<li><a href="#final-quiz">{labels["final_quiz"]}</a></li>',
-    ])
+    toc_items.append(f'<li><a href="#glossary">{labels["glossary"]}</a></li>')
+    if final_quiz_data:
+        toc_items.append(f'<li><a href="#final-quiz">{labels["final_quiz"]}</a></li>')
     toc_html = "\n".join(toc_items)
 
     lesson_sections = []
     for i, payload in enumerate(lesson_payloads, start=1):
         raw_section = payload["lesson_html"]
-        section_with_anchor = raw_section.replace(
-            '<section class="lesson-section">',
-            f'<section class="lesson-section" id="lesson-{i}">',
-            1
-        )
+        section_with_anchor = raw_section.replace('<section class="lesson-section">', f'<section class="lesson-section" id="lesson-{i}">', 1)
 
         sources = payload.get("sources", [])
         source_items = "\n".join(
             f"<li>{html.escape(str(src['document_name']))} — page {html.escape(str(src['page']))}, chunk {html.escape(str(src['chunk_id']))}</li>"
             for src in sources
         )
-
         if source_items:
             section_with_anchor += f"""
 <div class="lesson-sources">
-  <h3>{labels["sources_used"]}</h3>
-  <ul>
-    {source_items}
-  </ul>
+  <h3>{labels['sources_used']}</h3>
+  <ul>{source_items}</ul>
+</div>
+"""
+
+        excerpts = payload.get("source_excerpts", []) if include_source_excerpts else []
+        if excerpts:
+            excerpt_items = "".join(
+                f"<div class=\"source-excerpt\"><strong>{html.escape(str(e['document_name']))}</strong> — page {html.escape(str(e['page']))}, chunk {html.escape(str(e['chunk_id']))}<p>{html.escape(str(e['excerpt']))}</p></div>"
+                for e in excerpts
+            )
+            section_with_anchor += f"""
+<div class="lesson-excerpts">
+  <h3>{labels['source_excerpts']}</h3>
+  {excerpt_items}
 </div>
 """
         lesson_sections.append(section_with_anchor)
@@ -1095,6 +1106,34 @@ def build_course_html(
     estimated_minutes = estimate_duration_minutes(outline)
     generated_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
+    pretest_section = f"""
+      <section class="card" id="pretest">
+        <h2>{labels['pretest']}</h2>
+        <p class="muted">{labels['pretest_intro']}</p>
+        <div class="quiz-actions">
+          <button type="button" onclick="gradeQuiz('pretest')">{labels['check_pretest']}</button>
+          <button type="button" class="secondary" onclick="resetQuiz('pretest')">{labels['reset']}</button>
+        </div>
+        <div class="progress-wrap"><div class="progress-bar" id="pretest-progress"></div></div>
+        <div class="quiz-results" id="pretest-results"></div>
+        {pretest_html}
+      </section>
+""" if pretest_data else ""
+
+    final_quiz_section = f"""
+      <section class="card" id="final-quiz">
+        <h2>{labels['final_quiz']}</h2>
+        <p class="muted">{labels['final_intro']}</p>
+        <div class="quiz-actions">
+          <button type="button" onclick="gradeQuiz('final')">{labels['check_final']}</button>
+          <button type="button" class="secondary" onclick="resetQuiz('final')">{labels['reset']}</button>
+        </div>
+        <div class="progress-wrap"><div class="progress-bar" id="final-progress"></div></div>
+        <div class="quiz-results" id="final-results"></div>
+        {final_quiz_html}
+      </section>
+""" if final_quiz_data else ""
+
     return f"""<!DOCTYPE html>
 <html lang="{language}">
 <head>
@@ -1102,278 +1141,93 @@ def build_course_html(
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>{course_title}</title>
   <style>
-    :root {{
-      --bg: #0f172a;
-      --panel: #ffffff;
-      --text: #1f2937;
-      --muted: #64748b;
-      --line: #e2e8f0;
-      --primary: #2563eb;
-      --primary-soft: #dbeafe;
-      --shadow: 0 10px 30px rgba(15, 23, 42, 0.08);
-      --radius: 18px;
-    }}
-    * {{ box-sizing: border-box; }}
-    body {{
-      margin: 0;
-      font-family: Arial, Helvetica, sans-serif;
-      background: #f8fafc;
-      color: var(--text);
-      line-height: 1.65;
-    }}
-    .layout {{ display: grid; grid-template-columns: 280px 1fr; min-height: 100vh; }}
-    .sidebar {{
-      position: sticky; top: 0; align-self: start; height: 100vh; overflow: auto;
-      background: var(--bg); color: #fff; padding: 24px 18px;
-    }}
-    .sidebar h2 {{ margin: 0 0 8px; font-size: 1.25rem; }}
-    .sidebar p {{ color: #cbd5e1; margin-top: 0; font-size: 0.95rem; }}
-    .sidebar ol {{ padding-left: 18px; margin: 18px 0 0; }}
-    .sidebar li {{ margin-bottom: 10px; }}
-    .sidebar a {{ color: #bfdbfe; text-decoration: none; }}
-    .sidebar a:hover {{ text-decoration: underline; }}
-    .content {{ padding: 28px; max-width: 1100px; width: 100%; margin: 0 auto; }}
-    .card {{
-      background: var(--panel); border-radius: var(--radius); padding: 24px;
-      box-shadow: var(--shadow); margin-bottom: 20px;
-    }}
-    .hero {{ padding: 28px; }}
-    .hero h1 {{ margin: 8px 0 12px; font-size: 2.2rem; line-height: 1.2; color: #0f172a; }}
-    .badge {{
-      display: inline-block; background: var(--primary-soft); color: #1d4ed8;
-      padding: 6px 10px; border-radius: 999px; font-size: 0.9rem; margin-right: 8px; margin-bottom: 8px;
-    }}
-    .grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 14px; margin-top: 16px; }}
-    .stat {{ border: 1px solid var(--line); border-radius: 14px; padding: 14px; background: #fff; }}
-    .stat-label {{ color: var(--muted); font-size: 0.9rem; }}
-    .stat-value {{ margin-top: 6px; font-size: 1.2rem; font-weight: 700; color: #0f172a; }}
-    h2, h3 {{ color: #0f172a; }}
-    ul, ol {{ padding-left: 20px; }}
-    .muted {{ color: var(--muted); }}
-    .lesson-section {{
-      background: #fff; border-radius: var(--radius); padding: 24px;
-      box-shadow: var(--shadow); margin-bottom: 12px;
-    }}
-    .lesson-sources {{ margin-top: 18px; padding-top: 16px; border-top: 1px solid var(--line); }}
-    .glossary-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 14px; }}
-    .glossary-item {{ border: 1px solid var(--line); border-radius: 14px; padding: 16px; background: #fff; }}
-    .quiz-actions {{ display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 18px; }}
-    button {{
-      border: 0; background: var(--primary); color: #fff; padding: 10px 14px;
-      border-radius: 12px; cursor: pointer; font-size: 0.95rem;
-    }}
-    button.secondary {{ background: #334155; }}
-    .quiz-card {{ border: 1px solid var(--line); border-radius: 16px; padding: 18px; margin-bottom: 14px; background: #fff; }}
-    .question-lesson {{
-      display: inline-block; margin-bottom: 10px; font-size: 0.8rem; background: #eef2ff;
-      color: #4338ca; padding: 4px 10px; border-radius: 999px;
-    }}
-    .quiz-question {{ font-weight: 700; margin-bottom: 10px; }}
-    .quiz-options {{ display: grid; gap: 10px; }}
-    .quiz-option {{
-      display: flex; align-items: center; gap: 10px; border: 1px solid var(--line);
-      border-radius: 12px; padding: 10px 12px; cursor: pointer; transition: 0.2s ease;
-    }}
-    .quiz-option:hover {{ background: #f8fafc; }}
-    .quiz-option.correct {{ border-color: #86efac; background: #f0fdf4; }}
-    .quiz-option.incorrect {{ border-color: #fca5a5; background: #fef2f2; }}
-    .quiz-explanation {{ margin-top: 12px; color: var(--muted); }}
-    .quiz-results {{
-      margin-top: 14px; padding: 14px; border-radius: 14px; background: #eff6ff;
-      color: #1e3a8a; display: none;
-    }}
-    .progress-wrap {{
-      height: 10px; border-radius: 999px; background: #e2e8f0; overflow: hidden; margin-top: 12px;
-    }}
-    .progress-bar {{
-      height: 100%; width: 0%; background: linear-gradient(90deg, #2563eb, #38bdf8);
-      transition: width 0.3s ease;
-    }}
-    .footer {{ margin-top: 28px; color: var(--muted); font-size: 0.95rem; text-align: center; }}
-    @media (max-width: 980px) {{
-      .layout {{ grid-template-columns: 1fr; }}
-      .sidebar {{ position: relative; height: auto; }}
-      .content {{ padding: 18px; }}
-    }}
+    :root {{ --bg:#0f172a; --panel:#ffffff; --text:#1f2937; --muted:#64748b; --line:#e2e8f0; --primary:#2563eb; --primary-soft:#dbeafe; --shadow:0 10px 30px rgba(15,23,42,0.08); --radius:18px; }}
+    * {{ box-sizing:border-box; }}
+    body {{ margin:0; font-family:Arial, Helvetica, sans-serif; background:#f8fafc; color:var(--text); line-height:1.65; }}
+    .layout {{ display:grid; grid-template-columns:280px 1fr; min-height:100vh; }}
+    .sidebar {{ position:sticky; top:0; align-self:start; height:100vh; overflow:auto; background:var(--bg); color:#fff; padding:24px 18px; }}
+    .sidebar h2 {{ margin:0 0 8px; font-size:1.25rem; }}
+    .sidebar p {{ color:#cbd5e1; margin-top:0; font-size:0.95rem; }}
+    .sidebar ol {{ padding-left:18px; margin:18px 0 0; }}
+    .sidebar li {{ margin-bottom:10px; }}
+    .sidebar a {{ color:#bfdbfe; text-decoration:none; }}
+    .sidebar a:hover {{ text-decoration:underline; }}
+    .content {{ padding:28px; max-width:1100px; width:100%; margin:0 auto; }}
+    .card {{ background:var(--panel); border-radius:var(--radius); padding:24px; box-shadow:var(--shadow); margin-bottom:20px; }}
+    .hero {{ padding:28px; }}
+    .hero h1 {{ margin:8px 0 12px; font-size:2.2rem; line-height:1.2; color:#0f172a; }}
+    .badge {{ display:inline-block; background:var(--primary-soft); color:#1d4ed8; padding:6px 10px; border-radius:999px; font-size:0.9rem; margin-right:8px; margin-bottom:8px; }}
+    .grid {{ display:grid; grid-template-columns:repeat(auto-fit, minmax(220px, 1fr)); gap:14px; margin-top:16px; }}
+    .stat {{ border:1px solid var(--line); border-radius:14px; padding:14px; background:#fff; }}
+    .stat-label {{ color:var(--muted); font-size:0.9rem; }}
+    .stat-value {{ margin-top:6px; font-size:1.2rem; font-weight:700; color:#0f172a; }}
+    h2, h3 {{ color:#0f172a; }}
+    ul, ol {{ padding-left:20px; }}
+    .muted {{ color:var(--muted); }}
+    .lesson-section {{ background:#fff; border-radius:var(--radius); padding:24px; box-shadow:var(--shadow); margin-bottom:12px; }}
+    .lesson-sources, .lesson-excerpts {{ margin-top:18px; padding-top:16px; border-top:1px solid var(--line); }}
+    .source-excerpt {{ border:1px solid var(--line); padding:12px; border-radius:12px; margin-bottom:10px; background:#f8fafc; }}
+    .glossary-grid {{ display:grid; grid-template-columns:repeat(auto-fit, minmax(240px, 1fr)); gap:14px; }}
+    .glossary-item {{ border:1px solid var(--line); border-radius:14px; padding:16px; background:#fff; }}
+    .quiz-actions {{ display:flex; flex-wrap:wrap; gap:10px; margin-bottom:18px; }}
+    button {{ border:0; background:var(--primary); color:#fff; padding:10px 14px; border-radius:12px; cursor:pointer; font-size:0.95rem; }}
+    button.secondary {{ background:#334155; }}
+    .quiz-card {{ border:1px solid var(--line); border-radius:16px; padding:18px; margin-bottom:14px; background:#fff; }}
+    .question-lesson {{ display:inline-block; margin-bottom:10px; font-size:0.8rem; background:#eef2ff; color:#4338ca; padding:4px 10px; border-radius:999px; }}
+    .quiz-question {{ font-weight:700; margin-bottom:10px; }}
+    .quiz-options {{ display:grid; gap:10px; }}
+    .quiz-option {{ display:flex; align-items:center; gap:10px; border:1px solid var(--line); border-radius:12px; padding:10px 12px; cursor:pointer; transition:0.2s ease; }}
+    .quiz-option:hover {{ background:#f8fafc; }}
+    .quiz-option.correct {{ border-color:#86efac; background:#f0fdf4; }}
+    .quiz-option.incorrect {{ border-color:#fca5a5; background:#fef2f2; }}
+    .quiz-explanation {{ margin-top:12px; color:var(--muted); }}
+    .quiz-results {{ margin-top:14px; padding:14px; border-radius:14px; background:#eff6ff; color:#1e3a8a; display:none; }}
+    .progress-wrap {{ height:10px; border-radius:999px; background:#e2e8f0; overflow:hidden; margin-top:12px; }}
+    .progress-bar {{ height:100%; width:0%; background:linear-gradient(90deg, #2563eb, #38bdf8); transition:width 0.3s ease; }}
+    .footer {{ margin-top:28px; color:var(--muted); font-size:0.95rem; text-align:center; }}
+    @media (max-width:980px) {{ .layout {{ grid-template-columns:1fr; }} .sidebar {{ position:relative; height:auto; }} .content {{ padding:18px; }} }}
   </style>
 </head>
 <body>
   <div class="layout">
     <aside class="sidebar">
       <h2>{course_title}</h2>
-      <p>{labels["from_source_docs"]}</p>
-      <ol>
-        {toc_html}
-      </ol>
+      <p>{labels['from_source_docs']}</p>
+      <ol>{toc_html}</ol>
     </aside>
-
     <main class="content">
       <section class="card hero" id="overview">
-        <span class="badge">{labels["ai_generated_course"]}</span>
+        <span class="badge">{labels['ai_generated_course']}</span>
         <span class="badge">HTML</span>
-        <span class="badge">{lesson_count} {labels["lessons"].lower()}</span>
+        <span class="badge">{lesson_count} {labels['lessons'].lower()}</span>
         <h1>{course_title}</h1>
         <p>{course_description}</p>
-        <p><strong>{labels["target_audience"]}:</strong> {target_audience}</p>
-
+        <p><strong>{labels['target_audience']}:</strong> {target_audience}</p>
         <div class="grid">
-          <div class="stat">
-            <div class="stat-label">{labels["estimated_duration"]}</div>
-            <div class="stat-value">{estimated_minutes} {labels["minutes"]}</div>
-          </div>
-          <div class="stat">
-            <div class="stat-label">{labels["lessons"]}</div>
-            <div class="stat-value">{lesson_count}</div>
-          </div>
-          <div class="stat">
-            <div class="stat-label">{labels["documents_count"]}</div>
-            <div class="stat-value">{len(docs_info)}</div>
-          </div>
-          <div class="stat">
-            <div class="stat-label">{labels["final_questions"]}</div>
-            <div class="stat-value">{len(final_quiz_data)}</div>
-          </div>
+          <div class="stat"><div class="stat-label">{labels['estimated_duration']}</div><div class="stat-value">{estimated_minutes} {labels['minutes']}</div></div>
+          <div class="stat"><div class="stat-label">{labels['lessons']}</div><div class="stat-value">{lesson_count}</div></div>
+          <div class="stat"><div class="stat-label">{labels['documents_count']}</div><div class="stat-value">{len(docs_info)}</div></div>
+          <div class="stat"><div class="stat-label">{labels['final_questions']}</div><div class="stat-value">{len(final_quiz_data)}</div></div>
         </div>
       </section>
-
-      <section class="card" id="prerequisites">
-        <h2>{labels["prerequisites"]}</h2>
-        <ul>{prerequisites_items}</ul>
-      </section>
-
-      <section class="card">
-        <h2>{labels["learning_outcomes"]}</h2>
-        <ul>{overview_items}</ul>
-      </section>
-
-      <section class="card">
-        <h2>{labels["documents_used"]}</h2>
-        <ul>{docs_items}</ul>
-      </section>
-
-      <section class="card" id="pretest">
-        <h2>{labels["pretest"]}</h2>
-        <p class="muted">{labels["pretest_intro"]}</p>
-        <div class="quiz-actions">
-          <button type="button" onclick="gradeQuiz('pretest')">{labels["check_pretest"]}</button>
-          <button type="button" class="secondary" onclick="resetQuiz('pretest')">{labels["reset"]}</button>
-        </div>
-        <div class="progress-wrap"><div class="progress-bar" id="pretest-progress"></div></div>
-        <div class="quiz-results" id="pretest-results"></div>
-        {pretest_html}
-      </section>
-
+      <section class="card" id="prerequisites"><h2>{labels['prerequisites']}</h2><ul>{prerequisites_items}</ul></section>
+      <section class="card"><h2>{labels['learning_outcomes']}</h2><ul>{overview_items}</ul></section>
+      <section class="card"><h2>{labels['documents_used']}</h2><ul>{docs_items}</ul></section>
+      {pretest_section}
       {lesson_sections_html}
-
-      <section class="card" id="glossary">
-        <h2>{labels["glossary"]}</h2>
-        <div class="glossary-grid">{glossary_html}</div>
-      </section>
-
-      <section class="card" id="final-quiz">
-        <h2>{labels["final_quiz"]}</h2>
-        <p class="muted">{labels["final_intro"]}</p>
-        <div class="quiz-actions">
-          <button type="button" onclick="gradeQuiz('final')">{labels["check_final"]}</button>
-          <button type="button" class="secondary" onclick="resetQuiz('final')">{labels["reset"]}</button>
-        </div>
-        <div class="progress-wrap"><div class="progress-bar" id="final-progress"></div></div>
-        <div class="quiz-results" id="final-results"></div>
-        {final_quiz_html}
-      </section>
-
-      <div class="footer">{labels["generated_on"]} {generated_at}</div>
+      <section class="card" id="glossary"><h2>{labels['glossary']}</h2><div class="glossary-grid">{glossary_html}</div></section>
+      {final_quiz_section}
+      <div class="footer">{labels['generated_on']} {generated_at}</div>
     </main>
   </div>
-
   <script>
-    const SCORE_LABEL = {json.dumps(labels["score"])};
-
-    function getQuizCards(prefix) {{
-      return Array.from(document.querySelectorAll(`[data-question^="${{prefix}}-q-"]`));
-    }}
-
-    function updateProgress(prefix) {{
-      const cards = getQuizCards(prefix);
-      const answered = cards.filter(card => card.querySelector('input[type="radio"]:checked')).length;
-      const total = cards.length || 1;
-      const percent = Math.round((answered / total) * 100);
-      const bar = document.getElementById(`${{prefix}}-progress`);
-      if (bar) {{
-        bar.style.width = `${{percent}}%`;
-      }}
-    }}
-
-    function gradeQuiz(prefix) {{
-      const cards = getQuizCards(prefix);
-      let correct = 0;
-
-      cards.forEach(card => {{
-        const selected = card.querySelector('input[type="radio"]:checked');
-        const options = card.querySelectorAll('.quiz-option');
-        options.forEach(opt => opt.classList.remove('correct', 'incorrect'));
-
-        if (!selected) return;
-
-        const correctAnswer = selected.getAttribute('data-correct');
-        const optionLabels = card.querySelectorAll('.quiz-option');
-
-        optionLabels.forEach(label => {{
-          const input = label.querySelector('input');
-          if (!input) return;
-
-          if (input.value === correctAnswer) {{
-            label.classList.add('correct');
-          }}
-
-          if (input.checked && input.value !== correctAnswer) {{
-            label.classList.add('incorrect');
-          }}
-        }});
-
-        if (selected.value === correctAnswer) {{
-          correct += 1;
-        }}
-      }});
-
-      const results = document.getElementById(`${{prefix}}-results`);
-      if (results) {{
-        const total = cards.length;
-        const percent = total ? Math.round((correct / total) * 100) : 0;
-        results.style.display = 'block';
-        results.innerHTML = `<strong>${{SCORE_LABEL}}:</strong> ${{correct}} / ${{total}} (${{percent}}%)`;
-      }}
-
-      updateProgress(prefix);
-    }}
-
-    function resetQuiz(prefix) {{
-      const cards = getQuizCards(prefix);
-      cards.forEach(card => {{
-        card.querySelectorAll('input[type="radio"]').forEach(input => input.checked = false);
-        card.querySelectorAll('.quiz-option').forEach(opt => opt.classList.remove('correct', 'incorrect'));
-      }});
-
-      const results = document.getElementById(`${{prefix}}-results`);
-      if (results) {{
-        results.style.display = 'none';
-        results.innerHTML = '';
-      }}
-
-      updateProgress(prefix);
-    }}
-
-    document.addEventListener('change', (event) => {{
-      const target = event.target;
-      if (target.matches('input[type="radio"]')) {{
-        const name = target.name || '';
-        if (name.startsWith('pretest-')) updateProgress('pretest');
-        if (name.startsWith('final-')) updateProgress('final');
-      }}
-    }});
-
-    updateProgress('pretest');
-    updateProgress('final');
+    const SCORE_LABEL = {json.dumps(labels['score'])};
+    function getQuizCards(prefix) {{ return Array.from(document.querySelectorAll(`[data-question^="${{prefix}}-q-"]`)); }}
+    function updateProgress(prefix) {{ const cards = getQuizCards(prefix); const answered = cards.filter(card => card.querySelector('input[type="radio"]:checked')).length; const total = cards.length || 1; const percent = Math.round((answered / total) * 100); const bar = document.getElementById(`${{prefix}}-progress`); if (bar) bar.style.width = `${{percent}}%`; }}
+    function gradeQuiz(prefix) {{ const cards = getQuizCards(prefix); let correct = 0; cards.forEach(card => {{ const selected = card.querySelector('input[type="radio"]:checked'); const options = card.querySelectorAll('.quiz-option'); options.forEach(opt => opt.classList.remove('correct','incorrect')); if (!selected) return; const correctAnswer = selected.getAttribute('data-correct'); const optionLabels = card.querySelectorAll('.quiz-option'); optionLabels.forEach(label => {{ const input = label.querySelector('input'); if (!input) return; if (input.value === correctAnswer) label.classList.add('correct'); if (input.checked && input.value !== correctAnswer) label.classList.add('incorrect'); }}); if (selected.value === correctAnswer) correct += 1; }}); const results = document.getElementById(`${{prefix}}-results`); if (results) {{ const total = cards.length; const percent = total ? Math.round((correct / total) * 100) : 0; results.style.display = 'block'; results.innerHTML = `<strong>${{SCORE_LABEL}}:</strong> ${{correct}} / ${{total}} (${{percent}}%)`; }} updateProgress(prefix); }}
+    function resetQuiz(prefix) {{ const cards = getQuizCards(prefix); cards.forEach(card => {{ card.querySelectorAll('input[type="radio"]').forEach(input => input.checked = false); card.querySelectorAll('.quiz-option').forEach(opt => opt.classList.remove('correct','incorrect')); }}); const results = document.getElementById(`${{prefix}}-results`); if (results) {{ results.style.display = 'none'; results.innerHTML = ''; }} updateProgress(prefix); }}
+    document.addEventListener('change', (event) => {{ const target = event.target; if (target.matches('input[type="radio"]')) {{ const name = target.name || ''; if (name.startsWith('pretest-')) updateProgress('pretest'); if (name.startsWith('final-')) updateProgress('final'); }} }});
+    updateProgress('pretest'); updateProgress('final');
   </script>
 </body>
 </html>
@@ -1419,32 +1273,22 @@ def save_lesson_summaries(output_dir: str, lesson_payloads: List[Dict[str, Any]]
     path = build_output_path(output_dir, "lesson_summaries.json", output_prefix)
     lessons = outline.get("lessons", [])
     payload = []
-
     for idx, lesson in enumerate(lessons):
         lesson_payload = lesson_payloads[idx] if idx < len(lesson_payloads) else {}
-        payload.append(
-            {
-                "lesson_number": idx + 1,
-                "title": lesson.get("title", ""),
-                "goal": lesson.get("goal", ""),
-                "key_points": lesson.get("key_points", []),
-                "summary": lesson_payload.get("summary", ""),
-                "key_takeaways": lesson_payload.get("key_takeaways", []),
-                "sources": lesson_payload.get("sources", []),
-            }
-        )
+        payload.append({
+            "lesson_number": idx + 1,
+            "title": lesson.get("title", ""),
+            "goal": lesson.get("goal", ""),
+            "key_points": lesson.get("key_points", []),
+            "summary": lesson_payload.get("summary", ""),
+            "key_takeaways": lesson_payload.get("key_takeaways", []),
+            "sources": lesson_payload.get("sources", []),
+            "source_excerpts": lesson_payload.get("source_excerpts", []),
+        })
     return save_json(path, payload)
 
 
-def save_generation_report(
-    output_dir: str,
-    outline: Dict[str, Any],
-    docs_info: List[Dict[str, Any]],
-    pretest_data: List[Dict[str, Any]],
-    quiz_data: List[Dict[str, Any]],
-    args: argparse.Namespace,
-    elapsed_seconds: float,
-) -> str:
+def save_generation_report(output_dir: str, outline: Dict[str, Any], docs_info: List[Dict[str, Any]], pretest_data: List[Dict[str, Any]], quiz_data: List[Dict[str, Any]], args: argparse.Namespace, elapsed_seconds: float) -> str:
     path = build_output_path(output_dir, "generation_report.json", args.output_prefix)
     report = {
         "generated_at": datetime.now().isoformat(),
@@ -1464,10 +1308,11 @@ def save_generation_report(
         "final_quiz_questions_count": len(quiz_data),
         "estimated_duration_minutes": estimate_duration_minutes(outline),
         "elapsed_seconds": round(elapsed_seconds, 2),
-        "quiz_coverage": ensure_minimum_quiz_coverage(
-            quiz_data,
-            [lesson.get("title", "") for lesson in outline.get("lessons", [])]
-        ),
+        "quiz_coverage": ensure_minimum_quiz_coverage(quiz_data, [lesson.get("title", "") for lesson in outline.get("lessons", [])]) if quiz_data else {"covered_lessons": [], "missing_lessons": [], "coverage_ratio": 0},
+        "source_extensions": sorted(list({doc.get("type", "unknown") for doc in docs_info})),
+        "skip_pretest": args.skip_pretest,
+        "skip_final_quiz": args.skip_final_quiz,
+        "include_source_excerpts": args.include_source_excerpts,
     }
     return save_json(path, report)
 
@@ -1491,28 +1336,46 @@ def save_course_metadata(output_dir: str, outline: Dict[str, Any], docs_info: Li
     return save_json(path, payload)
 
 
+def save_course_bundle(output_dir: str, outline: Dict[str, Any], docs_info: List[Dict[str, Any]], lesson_payloads: List[Dict[str, Any]], pretest_data: List[Dict[str, Any]], quiz_data: List[Dict[str, Any]], args: argparse.Namespace) -> str:
+    path = build_output_path(output_dir, "course_bundle.json", args.output_prefix)
+    payload = {
+        "generated_at": datetime.now().isoformat(),
+        "config": {
+            "model": args.model,
+            "embedding_model": args.embedding_model,
+            "difficulty": args.difficulty,
+            "retrieval_type": args.retrieval_type,
+            "language": args.language,
+            "output_prefix": args.output_prefix,
+        },
+        "documents": docs_info,
+        "outline": outline,
+        "lessons": lesson_payloads,
+        "pretest": pretest_data,
+        "final_quiz": quiz_data,
+    }
+    return save_json(path, payload)
+
+
 # =========================
 # Main
 # =========================
 def main() -> None:
     args = parse_args()
+    ensure_directories(args.docs_path, args.db, args.manifest_file, args.output_dir, args.log_dir)
 
-    ensure_directories(
-        docs_path=args.docs_path,
-        db_path=args.db,
-        manifest_file=args.manifest_file,
-        output_dir=args.output_dir,
-        log_dir=args.log_dir,
-    )
+    if args.min_lessons < 1 or args.max_lessons < args.min_lessons:
+        print("(X) Invalid lesson range. Check --min-lessons and --max-lessons.")
+        sys.exit(1)
 
     started = time.time()
     log_message(args.log_dir, "Starting course and quiz generation pipeline")
 
-    pdf_files = collect_pdf_files(args.docs_path)
-    print(f"Found {len(pdf_files)} PDF file(s).")
+    source_files = collect_source_files(args.docs_path)
+    print(f"Found {len(source_files)} source file(s).")
 
     try:
-        vectorstore, docs_info = load_or_create_vectorstore(args, pdf_files)
+        vectorstore, docs_info = load_or_create_vectorstore(args, source_files)
         log_message(args.log_dir, f"Vector store ready. Documents loaded: {len(docs_info)}")
     except Exception as exc:
         print(f"(X) Failed to prepare vector store: {exc}")
@@ -1529,15 +1392,10 @@ def main() -> None:
 
     try:
         print("--- Generating course outline... ---")
-        preview_text = get_combined_preview_text(pdf_files, max_chars_per_file=args.max_preview_chars_per_file)
-        outline = generate_course_outline(
-            llm=llm,
-            preview_text=preview_text,
-            difficulty=args.difficulty,
-            language=args.language,
-        )
+        preview_text = get_combined_preview_text(source_files, max_chars_per_file=args.max_preview_chars_per_file)
+        outline = generate_course_outline(llm, preview_text, args.difficulty, args.language, args.min_lessons, args.max_lessons)
         if not args.disable_review_pass:
-            outline = review_outline(llm=llm, outline=outline, language=args.language)
+            outline = review_outline(llm, outline, args.language, args.min_lessons, args.max_lessons)
         log_message(args.log_dir, "Course outline generated successfully")
     except Exception as exc:
         print(f"(X) Failed to generate course outline: {exc}")
@@ -1546,97 +1404,49 @@ def main() -> None:
 
     lesson_payloads = []
     lessons = outline.get("lessons", [])
-
     try:
         for idx, lesson in enumerate(lessons, start=1):
             lesson_title = str(lesson.get("title", f"Lesson {idx}")).strip()
             lesson_goal = str(lesson.get("goal", "")).strip()
-            key_points = lesson.get("key_points", [])
-            if not isinstance(key_points, list):
-                key_points = []
-
+            key_points = lesson.get("key_points", []) if isinstance(lesson.get("key_points", []), list) else []
             print(f"--- Generating lesson {idx}/{len(lessons)}: {lesson_title} ---")
             log_message(args.log_dir, f"Generating lesson: {lesson_title}")
-
-            retrieved_docs = retrieve_lesson_context(
-                vectorstore=vectorstore,
-                lesson_title=lesson_title,
-                key_points=key_points,
-                top_k=args.top_k,
-                retrieval_type=args.retrieval_type,
-            )
-
-            lesson_payload = generate_lesson_html_section(
-                llm=llm,
-                lesson_title=lesson_title,
-                lesson_goal=lesson_goal,
-                key_points=key_points,
-                retrieved_docs=retrieved_docs,
-                language=args.language,
-            )
-            lesson_payloads.append(lesson_payload)
-
+            retrieved_docs = retrieve_lesson_context(vectorstore, lesson_title, key_points, args.top_k, args.retrieval_type)
+            lesson_payloads.append(generate_lesson_html_section(llm, lesson_title, lesson_goal, key_points, retrieved_docs, args.language, args.include_source_excerpts))
         log_message(args.log_dir, "All lesson sections generated successfully")
     except Exception as exc:
         print(f"(X) Failed during lesson generation: {exc}")
         log_message(args.log_dir, f"Lesson generation error: {exc}")
         sys.exit(1)
 
-    try:
-        print("--- Generating pre-test... ---")
-        pretest_data = generate_pretest(
-            llm=llm,
-            outline=outline,
-            pretest_questions=args.pretest_questions,
-            difficulty=args.difficulty,
-            language=args.language,
-        )
-        log_message(args.log_dir, f"Pre-test generated successfully with {len(pretest_data)} questions")
-    except Exception as exc:
-        print(f"(X) Failed to generate pre-test: {exc}")
-        log_message(args.log_dir, f"Pre-test generation error: {exc}")
-        sys.exit(1)
+    pretest_data: List[Dict[str, Any]] = []
+    if not args.skip_pretest:
+        try:
+            print("--- Generating pre-test... ---")
+            pretest_data = generate_pretest(llm, outline, args.pretest_questions, args.difficulty, args.language)
+            log_message(args.log_dir, f"Pre-test generated successfully with {len(pretest_data)} questions")
+        except Exception as exc:
+            print(f"(X) Failed to generate pre-test: {exc}")
+            log_message(args.log_dir, f"Pre-test generation error: {exc}")
+            sys.exit(1)
 
-    try:
-        print("--- Generating final quiz... ---")
-        quiz_data = generate_quiz(
-            llm=llm,
-            outline=outline,
-            lesson_payloads=lesson_payloads,
-            difficulty=args.difficulty,
-            quiz_questions=args.quiz_questions,
-            language=args.language,
-        )
-        if not args.disable_review_pass:
-            quiz_data = review_quiz(
-                llm=llm,
-                quiz_data=quiz_data,
-                lesson_titles=[lesson.get("title", "") for lesson in outline.get("lessons", [])],
-                language=args.language,
-            )
-        log_message(args.log_dir, f"Quiz generated successfully with {len(quiz_data)} questions")
-    except Exception as exc:
-        print(f"(X) Failed to generate quiz: {exc}")
-        log_message(args.log_dir, f"Quiz generation error: {exc}")
-        sys.exit(1)
+    quiz_data: List[Dict[str, Any]] = []
+    if not args.skip_final_quiz:
+        try:
+            print("--- Generating final quiz... ---")
+            quiz_data = generate_quiz(llm, outline, lesson_payloads, args.difficulty, args.quiz_questions, args.language)
+            if not args.disable_review_pass:
+                quiz_data = review_quiz(llm, quiz_data, [lesson.get("title", "") for lesson in outline.get("lessons", [])], args.language)
+            log_message(args.log_dir, f"Quiz generated successfully with {len(quiz_data)} questions")
+        except Exception as exc:
+            print(f"(X) Failed to generate quiz: {exc}")
+            log_message(args.log_dir, f"Quiz generation error: {exc}")
+            sys.exit(1)
 
     try:
         print("--- Building final HTML course... ---")
-        course_html = build_course_html(
-            outline=outline,
-            lesson_payloads=lesson_payloads,
-            docs_info=docs_info,
-            pretest_data=pretest_data,
-            final_quiz_data=quiz_data,
-            language=args.language,
-        )
-
-        markdown_summary = build_markdown_summary(
-            outline=outline,
-            docs_info=docs_info,
-            lesson_payloads=lesson_payloads,
-            language=args.language,
-        )
+        course_html = build_course_html(outline, lesson_payloads, docs_info, pretest_data, quiz_data, args.language, args.include_source_excerpts)
+        markdown_summary = build_markdown_summary(outline, docs_info, lesson_payloads, args.language)
 
         course_path = save_course_html(args.output_dir, course_html, args.output_prefix)
         outline_path = save_outline_json(args.output_dir, outline, args.output_prefix)
@@ -1645,17 +1455,10 @@ def main() -> None:
         metadata_path = save_course_metadata(args.output_dir, outline, docs_info, args)
         summaries_path = save_lesson_summaries(args.output_dir, lesson_payloads, outline, args.output_prefix)
         markdown_path = save_markdown_summary(args.output_dir, markdown_summary, args.output_prefix)
+        bundle_path = save_course_bundle(args.output_dir, outline, docs_info, lesson_payloads, pretest_data, quiz_data, args)
 
         elapsed = time.time() - started
-        report_path = save_generation_report(
-            output_dir=args.output_dir,
-            outline=outline,
-            docs_info=docs_info,
-            pretest_data=pretest_data,
-            quiz_data=quiz_data,
-            args=args,
-            elapsed_seconds=elapsed,
-        )
+        report_path = save_generation_report(args.output_dir, outline, docs_info, pretest_data, quiz_data, args, elapsed)
 
         print("\n[SUCCESS] Generation complete!")
         print(f"Course HTML:        {course_path}")
@@ -1665,15 +1468,11 @@ def main() -> None:
         print(f"Lesson summaries:   {summaries_path}")
         print(f"Markdown summary:   {markdown_path}")
         print(f"Metadata:           {metadata_path}")
+        print(f"Bundle:             {bundle_path}")
         print(f"Report:             {report_path}")
         print(f"Time:               {elapsed:.2f}s")
 
-        log_message(
-            args.log_dir,
-            f"Generation complete. course={course_path}, outline={outline_path}, pretest={pretest_path}, "
-            f"quiz={quiz_path}, summaries={summaries_path}, markdown={markdown_path}, "
-            f"metadata={metadata_path}, report={report_path}, elapsed={elapsed:.2f}s",
-        )
+        log_message(args.log_dir, f"Generation complete. course={course_path}, outline={outline_path}, pretest={pretest_path}, quiz={quiz_path}, summaries={summaries_path}, markdown={markdown_path}, metadata={metadata_path}, bundle={bundle_path}, report={report_path}, elapsed={elapsed:.2f}s")
     except Exception as exc:
         print(f"(X) Failed to save outputs: {exc}")
         log_message(args.log_dir, f"Save outputs error: {exc}")
