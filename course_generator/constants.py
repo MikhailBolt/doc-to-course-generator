@@ -1,0 +1,29 @@
+# Defaults and shared constants for the doc-to-course pipeline.
+
+DEFAULT_DOCS_PATH = "docs"
+DEFAULT_DB_FAISS_PATH = "vectorstore/db_faiss"
+DEFAULT_MANIFEST_FILE = "vectorstore/index_manifest.json"
+DEFAULT_OUTPUT_DIR = "output"
+DEFAULT_LOG_DIR = "logs"
+
+DEFAULT_EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
+DEFAULT_LLM_MODEL = "llama3"
+
+DEFAULT_CHUNK_SIZE = 1200
+DEFAULT_CHUNK_OVERLAP = 200
+DEFAULT_TOP_K = 6
+DEFAULT_QUIZ_QUESTIONS = 10
+DEFAULT_PRETEST_QUESTIONS = 5
+DEFAULT_RETRIEVAL_TYPE = "similarity"
+DEFAULT_LANGUAGE = "en"
+DEFAULT_MAX_PREVIEW_CHARS_PER_FILE = 6000
+DEFAULT_OUTPUT_PREFIX = ""
+DEFAULT_MAX_LESSONS = 7
+DEFAULT_MIN_LESSONS = 4
+
+# Semantic retrieval bundled into the outline prompt (grounding).
+DEFAULT_OUTLINE_RAG_MAX_CHUNKS = 28
+DEFAULT_OUTLINE_RAG_MAX_CHARS = 12000
+DEFAULT_OUTLINE_RAG_TOP_K_PER_QUERY = 8
+
+SUPPORTED_EXTENSIONS = {".pdf", ".txt", ".md"}

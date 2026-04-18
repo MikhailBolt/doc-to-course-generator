@@ -1,0 +1,32 @@
+# Bytecode / cache
+__pycache__/
+*.py[cod]
+*$py.class
+.Python
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Secrets — never commit real keys or tokens (only keep `.env.example` as a template)
+.env
+.env.local
+.env.*.local
+
+# Local runtime outputs (regenerate from docs)
+output/
+logs/
+vectorstore/
+
+# OS / IDE
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Optional: large ML caches (sentence-transformers / Hugging Face)
+.cache/
+*.log
