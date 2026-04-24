@@ -19,6 +19,13 @@ output/
 logs/
 vectorstore/
 
+# Streamlit
+.streamlit/
+
+# Temporary uploads / scratch
+.tmp_uploads/
+tmp/
+
 # OS / IDE
 .DS_Store
 Thumbs.db

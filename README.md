@@ -32,6 +32,13 @@ Basic:
 python main.py --docs-path docs
 ```
 
+Web UI (Streamlit):
+
+```
+pip install -r requirements.txt
+streamlit run streamlit_app.py
+```
+
 Advanced:
 
 ```
@@ -50,8 +57,19 @@ python main.py \
 Create `.env` file:
 
 ```
-DEFAULT_INTERVIEW_QUESTIONS=5
-DEFAULT_QUIZ_QUESTIONS=5
+DOCS_PATH=docs
+LLM_MODEL=llama3
+EMBEDDING_MODEL=sentence-transformers/all-MiniLM-L6-v2
+
+QUIZ_QUESTIONS=10
+PRETEST_QUESTIONS=5
+DIFFICULTY=medium
+RETRIEVAL_TYPE=similarity
+LANGUAGE=en
+
+# Optional: outline grounding via FAISS retrieval
+OUTLINE_RAG_MAX_CHUNKS=28
+OUTLINE_RAG_MAX_CHARS=12000
 ```
 
 ---
