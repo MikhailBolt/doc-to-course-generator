@@ -82,6 +82,7 @@ def save_generation_report(
     args: Namespace,
     elapsed_seconds: float,
     outline_rag_used: bool,
+    quality_score: Dict[str, Any] | None = None,
 ) -> str:
     path = build_output_path(output_dir, "generation_report.json", args.output_prefix)
     report = {
@@ -109,6 +110,7 @@ def save_generation_report(
         "include_source_excerpts": args.include_source_excerpts,
         "outline_rag_used": outline_rag_used,
         "skip_outline_rag": getattr(args, "skip_outline_rag", False),
+        "quality": quality_score or {},
     }
     return save_json(path, report)
 

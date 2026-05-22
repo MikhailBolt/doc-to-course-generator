@@ -2,11 +2,12 @@ import os
 import tempfile
 from argparse import Namespace
 from pathlib import Path
-from typing import List, Optional
+from typing import Any, List, Optional
 
 import streamlit as st
 
 from course_generator.cli import ensure_directories
+from course_generator.health import check_ollama
 from course_generator.constants import (
     DEFAULT_CHUNK_OVERLAP,
     DEFAULT_CHUNK_SIZE,
@@ -33,7 +34,7 @@ from course_generator.constants import (
 from course_generator.pipeline import run_pipeline
 
 
-def _save_uploads(uploaded_files: List[st.runtime.uploaded_file_manager.UploadedFile], target_dir: Path) -> None:
+def _save_uploads(uploaded_files: List[Any], target_dir: Path) -> None:
     target_dir.mkdir(parents=True, exist_ok=True)
     for uf in uploaded_files:
         name = Path(uf.name).name
@@ -109,10 +110,22 @@ def main() -> None:
     st.caption("Generate an HTML training course + quizzes from PDF/TXT/MD using local Ollama + FAISS RAG.")
 
     with st.sidebar:
+        st.header("Ollama")
+        model_default = os.getenv("LLM_MODEL", DEFAULT_LLM_MODEL)
+        model = st.text_input("Ollama model", value=model_default, key="ollama_model")
+        if st.button("Check Ollama", use_container_width=True):
+            info = check_ollama(model)
+            if not info.get("ok"):
+                st.error(f"Ollama unreachable: {info.get('error', 'unknown')}")
+            elif not info.get("model_available"):
+                st.warning(f"Model `{model}` not found. Try: {', '.join(info.get('models_sample', [])[:5])}")
+            else:
+                st.success(f"Ollama OK — `{model}` is available.")
+
         st.header("Inputs")
         source_mode = st.radio("Source", ["Upload files", "Use local docs folder"], index=0)
 
-        uploaded_files: List[st.runtime.uploaded_file_manager.UploadedFile] = []
+        uploaded_files: List[Any] = []
         docs_path: Optional[str] = None
 
         if source_mode == "Upload files":
@@ -127,7 +140,6 @@ def main() -> None:
         st.header("Generation")
         language = st.selectbox("Language", ["en", "ru"], index=0 if DEFAULT_LANGUAGE == "en" else 1)
         difficulty = st.selectbox("Difficulty", ["easy", "medium", "hard"], index=1)
-        model = st.text_input("Ollama model", value=os.getenv("LLM_MODEL", DEFAULT_LLM_MODEL))
         embedding_model = st.text_input("Embedding model", value=os.getenv("EMBEDDING_MODEL", DEFAULT_EMBEDDING_MODEL))
         retrieval_type = st.selectbox("Retrieval", ["similarity", "mmr"], index=0 if DEFAULT_RETRIEVAL_TYPE == "similarity" else 1)
 
@@ -168,6 +180,18 @@ def main() -> None:
 
     if not run_btn:
         st.info("Pick a source (upload or docs folder), then click **Generate**.")
+        return
+
+    if int(min_lessons) > int(max_lessons):
+        st.error("Min lessons must be ≤ max lessons.")
+        return
+
+    ollama_info = check_ollama(model)
+    if not ollama_info.get("ok"):
+        st.error(f"Start Ollama first (could not reach {ollama_info.get('host')}): {ollama_info.get('error', '')}")
+        return
+    if not ollama_info.get("model_available"):
+        st.error(f"Model `{model}` is not available in Ollama. Run `ollama pull {model}` or pick another model.")
         return
 
     if source_mode == "Upload files":
@@ -214,9 +238,14 @@ def main() -> None:
     ensure_directories(args.docs_path, args.db, args.manifest_file, args.output_dir, args.log_dir)
 
     with st.status("Generating…", expanded=True) as status:
-        status.write("Running pipeline (this may take a while depending on model + docs).")
+        status.write("Pipeline started…")
+
+        def on_progress(stage: str, detail: str) -> None:
+            line = f"**{stage}** — {detail}" if detail else f"**{stage}**"
+            status.write(line)
+
         try:
-            result = run_pipeline(args)
+            result = run_pipeline(args, progress=on_progress)
         except Exception as exc:
             status.update(label="Failed", state="error")
             st.exception(exc)
@@ -224,7 +253,22 @@ def main() -> None:
         status.update(label="Done", state="complete")
 
     paths = result["paths"]
-    st.success(f"Done in {result['elapsed_seconds']}s. Outline RAG used: {result['outline_rag_used']}")
+    quality = result.get("quality", {})
+    st.success(
+        f"Done in {result['elapsed_seconds']}s · outline RAG: {result['outline_rag_used']} · "
+        f"quality **{quality.get('overall_score', '—')}/100** (grade **{quality.get('grade', '—')}**)"
+    )
+
+    if quality.get("checks"):
+        with st.expander("Quality breakdown", expanded=True):
+            st.progress(min(1.0, float(quality.get("overall_score", 0)) / 100.0))
+            for check in quality["checks"]:
+                icon = "✅" if check.get("passed") else "⚠️"
+                st.markdown(
+                    f"{icon} **{check.get('label')}** — {check.get('score')}/{check.get('max')}  \n"
+                    f"<span style='color:#64748b'>{check.get('detail', '')}</span>",
+                    unsafe_allow_html=True,
+                )
 
     col_a, col_b = st.columns([1, 1])
 
@@ -237,10 +281,18 @@ def main() -> None:
             ("Final quiz (JSON)", "quiz", "application/json"),
             ("Bundle (JSON)", "bundle", "application/json"),
             ("Generation report (JSON)", "report", "application/json"),
+            ("Markdown summary", "markdown", "text/markdown"),
         ]:
             p = Path(paths[key])
             if p.exists():
                 st.download_button(label, data=p.read_bytes(), file_name=p.name, mime=mime)
+
+        outline = result.get("outline", {})
+        if outline:
+            st.markdown("**Course title**")
+            st.write(outline.get("course_title", ""))
+            st.markdown("**Description**")
+            st.write(outline.get("course_description", ""))
 
     with col_b:
         st.subheader("Preview")

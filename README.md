@@ -15,6 +15,9 @@ Generate a structured **HTML training course** and **assessment quizzes** from d
 - Auto rebuild index
 - Optional review pass
 - Bundle export (`course_bundle.json`)
+- **Streamlit Web UI** with live progress
+- **Heuristic quality score** in `generation_report.json`
+- **Ollama health check** (`--check-ollama` / UI button)
 
 ---
 
@@ -37,6 +40,12 @@ Web UI (Streamlit):
 ```
 pip install -r requirements.txt
 streamlit run streamlit_app.py
+```
+
+Check Ollama before a long run:
+
+```
+python main.py --check-ollama --model llama3
 ```
 
 Advanced:
@@ -81,6 +90,7 @@ OUTLINE_RAG_MAX_CHARS=12000
 - quiz.json  
 - pretest.json  
 - course_bundle.json  
+- `generation_report.json` (includes **quality** breakdown)
 
 ---
 
@@ -95,7 +105,6 @@ OUTLINE_RAG_MAX_CHARS=12000
 
 ## 🛣 Future improvements
 
-- Web UI (Streamlit)
-- Course quality scoring
 - Multi-agent generation pipeline
 - Export to PDF / DOCX
+- LLM-based quality review (beyond heuristics)

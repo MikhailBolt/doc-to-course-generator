@@ -30,6 +30,7 @@ from course_generator.constants import (
     SUPPORTED_EXTENSIONS,
 )
 from course_generator.documents import collect_source_files
+from course_generator.health import check_ollama
 from course_generator.pipeline import run_pipeline
 
 load_dotenv()
@@ -87,7 +88,15 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=int(os.getenv("OUTLINE_RAG_MAX_CHARS", DEFAULT_OUTLINE_RAG_MAX_CHARS)),
     )
+    parser.add_argument("--check-ollama", action="store_true", help="Check Ollama connectivity and model availability, then exit.")
     return parser.parse_args()
+
+
+def _cli_progress(stage: str, detail: str) -> None:
+    if detail:
+        print(f"--- [{stage}] {detail} ---")
+    else:
+        print(f"--- [{stage}] ---")
 
 
 def log_message(log_dir: str, message: str) -> None:
@@ -98,6 +107,18 @@ def log_message(log_dir: str, message: str) -> None:
 
 def main() -> None:
     args = parse_args()
+
+    if args.check_ollama:
+        info = check_ollama(args.model)
+        if not info.get("ok"):
+            print(f"(X) Ollama not reachable at {info.get('host')}: {info.get('error', 'unknown error')}")
+            sys.exit(1)
+        if not info.get("model_available"):
+            print(f"(X) Model '{args.model}' not found. Available (sample): {info.get('models_sample', [])}")
+            sys.exit(1)
+        print(f"[OK] Ollama reachable. Model '{args.model}' is available.")
+        sys.exit(0)
+
     ensure_directories(args.docs_path, args.db, args.manifest_file, args.output_dir, args.log_dir)
 
     if args.min_lessons < 1 or args.max_lessons < args.min_lessons:
@@ -110,7 +131,7 @@ def main() -> None:
         source_files = collect_source_files(args.docs_path)
         print(f"Found {len(source_files)} source file(s).")
         print("--- Running generation pipeline... ---")
-        result = run_pipeline(args)
+        result = run_pipeline(args, progress=_cli_progress)
     except Exception as exc:
         print(f"(X) Generation failed: {exc}")
         log_message(args.log_dir, f"Generation error: {exc}")
@@ -128,6 +149,9 @@ def main() -> None:
     print(f"Bundle:             {paths['bundle']}")
     print(f"Report:             {paths['report']}")
     print(f"Time:               {result['elapsed_seconds']:.2f}s")
+    quality = result.get("quality", {})
+    if quality:
+        print(f"Quality score:      {quality.get('overall_score', 'n/a')}/100 (grade {quality.get('grade', '-')})")
 
     log_message(
         args.log_dir,

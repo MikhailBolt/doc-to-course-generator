@@ -1,6 +1,6 @@
 import time
 from argparse import Namespace
-from typing import Any, Dict, List
+from typing import Any, Callable, Dict, List, Optional
 
 from langchain_ollama import OllamaLLM
 
@@ -25,25 +25,40 @@ from course_generator.io import (
     save_pretest_json,
     save_quiz_json,
 )
+from course_generator.quality import compute_quality_score
 from course_generator.rag import load_or_create_vectorstore, retrieve_lesson_context, retrieve_outline_context
 
+ProgressCallback = Callable[[str, str], None]
 
-def run_pipeline(args: Namespace) -> Dict[str, Any]:
+
+def _notify(progress: Optional[ProgressCallback], stage: str, detail: str = "") -> None:
+    if progress:
+        progress(stage, detail)
+
+
+def run_pipeline(args: Namespace, progress: Optional[ProgressCallback] = None) -> Dict[str, Any]:
     """
     Run the full generation pipeline and return paths + artifacts.
 
     Unlike CLI, this raises exceptions instead of calling sys.exit().
+    Optional progress(stage, detail) reports pipeline steps to UIs or logs.
     """
     started = time.time()
 
+    _notify(progress, "load_documents", "Collecting source files")
     source_files = collect_source_files(args.docs_path)
+    _notify(progress, "vectorstore", f"Building or loading FAISS index ({len(source_files)} file(s))")
     vectorstore, docs_info = load_or_create_vectorstore(args, source_files)
+
+    _notify(progress, "llm", f"Connecting to Ollama model: {args.model}")
     llm = OllamaLLM(model=args.model)
 
+    _notify(progress, "outline", "Generating course outline")
     preview_text = get_combined_preview_text(source_files, max_chars_per_file=args.max_preview_chars_per_file)
     rag_context = ""
     outline_rag_used = False
     if not args.skip_outline_rag:
+        _notify(progress, "outline_rag", "Retrieving chunks for outline grounding")
         rag_context = retrieve_outline_context(
             vectorstore,
             source_files,
@@ -63,14 +78,17 @@ def run_pipeline(args: Namespace) -> Dict[str, Any]:
         args.max_lessons,
     )
     if not args.disable_review_pass:
+        _notify(progress, "review_outline", "Reviewing outline")
         outline = review_outline(llm, outline, args.language, args.min_lessons, args.max_lessons)
 
     lesson_payloads: List[Dict[str, Any]] = []
     lessons = outline.get("lessons", [])
+    lesson_total = len(lessons)
     for idx, lesson in enumerate(lessons, start=1):
         lesson_title = str(lesson.get("title", f"Lesson {idx}")).strip()
         lesson_goal = str(lesson.get("goal", "")).strip()
         key_points = lesson.get("key_points", []) if isinstance(lesson.get("key_points", []), list) else []
+        _notify(progress, "lesson", f"{idx}/{lesson_total}: {lesson_title}")
         retrieved_docs = retrieve_lesson_context(vectorstore, lesson_title, key_points, args.top_k, args.retrieval_type)
         lesson_payloads.append(
             generate_lesson_html_section(
@@ -86,16 +104,29 @@ def run_pipeline(args: Namespace) -> Dict[str, Any]:
 
     pretest_data: List[Dict[str, Any]] = []
     if not args.skip_pretest:
+        _notify(progress, "pretest", "Generating diagnostic pre-test")
         pretest_data = generate_pretest(llm, outline, args.pretest_questions, args.difficulty, args.language)
 
     quiz_data: List[Dict[str, Any]] = []
     if not args.skip_final_quiz:
+        _notify(progress, "quiz", "Generating final quiz")
         quiz_data = generate_quiz(llm, outline, lesson_payloads, args.difficulty, args.quiz_questions, args.language)
         if not args.disable_review_pass:
+            _notify(progress, "review_quiz", "Reviewing quiz")
             quiz_data = review_quiz(llm, quiz_data, [lesson.get("title", "") for lesson in outline.get("lessons", [])], args.language)
 
+    _notify(progress, "export", "Building HTML and saving outputs")
     course_html = build_course_html(outline, lesson_payloads, docs_info, pretest_data, quiz_data, args.language, args.include_source_excerpts)
     markdown_summary = build_markdown_summary(outline, docs_info, lesson_payloads, args.language)
+
+    quality = compute_quality_score(
+        outline,
+        lesson_payloads,
+        pretest_data,
+        quiz_data,
+        args,
+        outline_rag_used=outline_rag_used,
+    )
 
     course_path = save_course_html(args.output_dir, course_html, args.output_prefix)
     outline_path = save_outline_json(args.output_dir, outline, args.output_prefix)
@@ -116,7 +147,10 @@ def run_pipeline(args: Namespace) -> Dict[str, Any]:
         args,
         elapsed,
         outline_rag_used=outline_rag_used,
+        quality_score=quality,
     )
+
+    _notify(progress, "done", f"Finished in {elapsed:.1f}s — quality {quality['overall_score']}/100")
 
     return {
         "docs_info": docs_info,
@@ -126,6 +160,7 @@ def run_pipeline(args: Namespace) -> Dict[str, Any]:
         "quiz": quiz_data,
         "course_html": course_html,
         "markdown_summary": markdown_summary,
+        "quality": quality,
         "paths": {
             "course_html": course_path,
             "outline": outline_path,
@@ -140,4 +175,3 @@ def run_pipeline(args: Namespace) -> Dict[str, Any]:
         "elapsed_seconds": round(elapsed, 2),
         "outline_rag_used": outline_rag_used,
     }
-
