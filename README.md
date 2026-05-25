@@ -18,6 +18,9 @@ Generate a structured **HTML training course** and **assessment quizzes** from d
 - **Streamlit Web UI** with live progress
 - **Heuristic quality score** in `generation_report.json`
 - **Ollama health check** (`--check-ollama` / UI button)
+- **Delivery ZIP** (`course_delivery.zip`) with all artifacts
+- **Streamlit presets** (Quick draft / Full course / Outline only)
+- **Quality recommendations** after each run
 
 ---
 
@@ -33,6 +36,12 @@ Basic:
 
 ```
 python main.py --docs-path docs
+```
+
+Try the included sample document:
+
+```
+python main.py --docs-path docs/sample-topic.txt
 ```
 
 Web UI (Streamlit):
@@ -91,6 +100,7 @@ OUTLINE_RAG_MAX_CHARS=12000
 - pretest.json  
 - course_bundle.json  
 - `generation_report.json` (includes **quality** breakdown)
+- `course_delivery.zip` (all of the above in one archive)
 
 ---
 
@@ -108,3 +118,4 @@ OUTLINE_RAG_MAX_CHARS=12000
 - Multi-agent generation pipeline
 - Export to PDF / DOCX
 - LLM-based quality review (beyond heuristics)
+- Persisted user presets in the UI

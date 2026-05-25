@@ -183,9 +183,50 @@ def compute_quality_score(
     overall = round(100 * total / max_total) if max_total else 0
     overall = max(0, min(100, overall))
 
+    recommendations = _build_recommendations(checks, overall, args, outline_rag_used)
+
     return {
         "overall_score": overall,
         "grade": _grade_from_score(overall),
         "checks": checks,
-        "summary": f"Score {overall}/100 (grade { _grade_from_score(overall) })",
+        "summary": f"Score {overall}/100 (grade {_grade_from_score(overall)})",
+        "recommendations": recommendations,
     }
+
+
+def _build_recommendations(
+    checks: List[Dict[str, Any]],
+    overall: int,
+    args: Namespace,
+    outline_rag_used: bool,
+) -> List[str]:
+    tips: List[str] = []
+    failed = {c["id"]: c for c in checks if not c.get("passed")}
+
+    if "outline_rag" in failed and getattr(args, "skip_outline_rag", False):
+        tips.append("Enable outline RAG (uncheck skip / remove --skip-outline-rag) for better topic grounding.")
+    elif not outline_rag_used and "outline_rag" in failed:
+        tips.append("Outline RAG returned empty context — try --rebuild or add more source text.")
+
+    if "lesson_count" in failed:
+        tips.append("Adjust min/max lessons or add richer source documents so the model can plan more lessons.")
+
+    if "lesson_completeness" in failed:
+        tips.append("Lessons look thin — increase --top-k or enable review pass for fuller lesson sections.")
+
+    if "quiz_coverage" in failed:
+        tips.append("Final quiz misses lessons — raise --quiz-questions or rerun with review pass enabled.")
+
+    if "pretest" in failed and not getattr(args, "skip_pretest", False):
+        tips.append("Pre-test is short — increase --pretest-questions or simplify the outline.")
+
+    if "glossary" in failed:
+        tips.append("Glossary is small — ensure source docs define terms; review pass may help.")
+
+    if overall < 70 and getattr(args, "disable_review_pass", False):
+        tips.append("Enable review pass for clearer outline and quiz wording.")
+
+    if not tips and overall < 85:
+        tips.append("Good baseline — try Full course preset or include_source_excerpts for richer output.")
+
+    return tips[:6]

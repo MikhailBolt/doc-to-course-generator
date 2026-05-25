@@ -7,7 +7,8 @@ from typing import Any, List, Optional
 import streamlit as st
 
 from course_generator.cli import ensure_directories
-from course_generator.health import check_ollama
+from course_generator.health import check_ollama, list_ollama_models
+from course_generator.presets import PRESET_NAMES, PRESETS
 from course_generator.constants import (
     DEFAULT_CHUNK_OVERLAP,
     DEFAULT_CHUNK_SIZE,
@@ -112,7 +113,23 @@ def main() -> None:
     with st.sidebar:
         st.header("Ollama")
         model_default = os.getenv("LLM_MODEL", DEFAULT_LLM_MODEL)
-        model = st.text_input("Ollama model", value=model_default, key="ollama_model")
+        ollama_models: List[str] = []
+        try:
+            ollama_models = list_ollama_models(timeout=3)
+        except Exception:
+            ollama_models = []
+
+        if ollama_models:
+            default_idx = 0
+            for i, name in enumerate(ollama_models):
+                if name == model_default or name.startswith(f"{model_default}:"):
+                    default_idx = i
+                    break
+            model = st.selectbox("Ollama model", ollama_models, index=default_idx, key="ollama_model")
+        else:
+            model = st.text_input("Ollama model", value=model_default, key="ollama_model")
+            st.caption("Start Ollama to load models into the list automatically.")
+
         if st.button("Check Ollama", use_container_width=True):
             info = check_ollama(model)
             if not info.get("ok"):
@@ -138,6 +155,9 @@ def main() -> None:
             docs_path = st.text_input("Docs path", value=os.getenv("DOCS_PATH", DEFAULT_DOCS_PATH))
 
         st.header("Generation")
+        preset_name = st.selectbox("Preset", PRESET_NAMES, index=0)
+        preset_cfg = PRESETS.get(preset_name, {}) if preset_name != "Custom" else {}
+
         language = st.selectbox("Language", ["en", "ru"], index=0 if DEFAULT_LANGUAGE == "en" else 1)
         difficulty = st.selectbox("Difficulty", ["easy", "medium", "hard"], index=1)
         embedding_model = st.text_input("Embedding model", value=os.getenv("EMBEDDING_MODEL", DEFAULT_EMBEDDING_MODEL))
@@ -145,7 +165,13 @@ def main() -> None:
 
         chunk_size = st.number_input("Chunk size", min_value=200, max_value=4000, value=DEFAULT_CHUNK_SIZE, step=50)
         chunk_overlap = st.number_input("Chunk overlap", min_value=0, max_value=2000, value=DEFAULT_CHUNK_OVERLAP, step=50)
-        top_k = st.number_input("Top-k chunks per lesson", min_value=1, max_value=20, value=DEFAULT_TOP_K, step=1)
+        top_k = st.number_input(
+            "Top-k chunks per lesson",
+            min_value=1,
+            max_value=20,
+            value=int(preset_cfg.get("top_k", DEFAULT_TOP_K)),
+            step=1,
+        )
         max_preview_chars_per_file = st.number_input(
             "Max preview chars per file",
             min_value=500,
@@ -155,22 +181,52 @@ def main() -> None:
         )
 
         st.header("Course shape")
-        min_lessons = st.number_input("Min lessons", min_value=1, max_value=30, value=DEFAULT_MIN_LESSONS, step=1)
-        max_lessons = st.number_input("Max lessons", min_value=1, max_value=50, value=DEFAULT_MAX_LESSONS, step=1)
+        min_lessons = st.number_input(
+            "Min lessons",
+            min_value=1,
+            max_value=30,
+            value=int(preset_cfg.get("min_lessons", DEFAULT_MIN_LESSONS)),
+            step=1,
+        )
+        max_lessons = st.number_input(
+            "Max lessons",
+            min_value=1,
+            max_value=50,
+            value=int(preset_cfg.get("max_lessons", DEFAULT_MAX_LESSONS)),
+            step=1,
+        )
 
         st.header("Quizzes")
-        quiz_questions = st.number_input("Final quiz questions", min_value=0, max_value=50, value=DEFAULT_QUIZ_QUESTIONS, step=1)
-        pretest_questions = st.number_input("Pre-test questions", min_value=0, max_value=50, value=DEFAULT_PRETEST_QUESTIONS, step=1)
-        skip_pretest = st.checkbox("Skip pre-test", value=False)
-        skip_final_quiz = st.checkbox("Skip final quiz", value=False)
+        quiz_questions = st.number_input(
+            "Final quiz questions",
+            min_value=0,
+            max_value=50,
+            value=int(preset_cfg.get("quiz_questions", DEFAULT_QUIZ_QUESTIONS)),
+            step=1,
+        )
+        pretest_questions = st.number_input(
+            "Pre-test questions",
+            min_value=0,
+            max_value=50,
+            value=int(preset_cfg.get("pretest_questions", DEFAULT_PRETEST_QUESTIONS)),
+            step=1,
+        )
+        skip_pretest = st.checkbox("Skip pre-test", value=bool(preset_cfg.get("skip_pretest", False)))
+        skip_final_quiz = st.checkbox("Skip final quiz", value=bool(preset_cfg.get("skip_final_quiz", False)))
 
         st.header("Quality / diagnostics")
-        include_source_excerpts = st.checkbox("Include source excerpts", value=False)
-        disable_review_pass = st.checkbox("Disable review pass", value=False)
+        include_source_excerpts = st.checkbox(
+            "Include source excerpts",
+            value=bool(preset_cfg.get("include_source_excerpts", False)),
+        )
+        disable_review_pass = st.checkbox(
+            "Disable review pass",
+            value=bool(preset_cfg.get("disable_review_pass", False)),
+        )
         rebuild = st.checkbox("Force rebuild FAISS index", value=False)
 
         st.header("Outline grounding (RAG)")
-        skip_outline_rag = st.checkbox("Skip outline RAG", value=False)
+        skip_outline_rag = st.checkbox("Skip outline RAG", value=bool(preset_cfg.get("skip_outline_rag", False)))
         outline_rag_max_chunks = st.number_input("Outline RAG max chunks", min_value=0, max_value=200, value=DEFAULT_OUTLINE_RAG_MAX_CHUNKS, step=1)
         outline_rag_max_chars = st.number_input("Outline RAG max chars", min_value=1000, max_value=100000, value=DEFAULT_OUTLINE_RAG_MAX_CHARS, step=1000)
 
@@ -270,6 +326,12 @@ def main() -> None:
                     unsafe_allow_html=True,
                 )
 
+    recs = quality.get("recommendations", [])
+    if recs:
+        with st.expander("Suggestions to improve quality"):
+            for tip in recs:
+                st.markdown(f"- {tip}")
+
     col_a, col_b = st.columns([1, 1])
 
     with col_a:
@@ -286,6 +348,15 @@ def main() -> None:
             p = Path(paths[key])
             if p.exists():
                 st.download_button(label, data=p.read_bytes(), file_name=p.name, mime=mime)
+
+        zip_p = paths.get("delivery_zip")
+        if zip_p and Path(zip_p).exists():
+            st.download_button(
+                "All outputs (ZIP)",
+                data=Path(zip_p).read_bytes(),
+                file_name=Path(zip_p).name,
+                mime="application/zip",
+            )
 
         outline = result.get("outline", {})
         if outline:

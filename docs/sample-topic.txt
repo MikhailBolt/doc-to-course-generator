@@ -1,0 +1,19 @@
+# Sample source document
+
+Use this file to test the generator without your own materials.
+
+## Topic: Introduction to retrieval-augmented generation (RAG)
+
+RAG combines document search with a language model. The system splits source text into chunks,
+embeds them into a vector index, and retrieves the most relevant chunks for each question or lesson.
+
+## Key ideas
+
+- Chunking keeps context sizes manageable for local models.
+- Vector search (for example FAISS) finds semantically similar passages.
+- Grounding reduces hallucinations when the model must cite retrieved text.
+
+## Learning goals
+
+After studying the generated course, a learner should be able to explain what RAG is,
+when to rebuild an index, and how pre-tests and final quizzes check understanding.

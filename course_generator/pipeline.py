@@ -25,6 +25,7 @@ from course_generator.io import (
     save_pretest_json,
     save_quiz_json,
 )
+from course_generator.export import create_delivery_zip
 from course_generator.quality import compute_quality_score
 from course_generator.rag import load_or_create_vectorstore, retrieve_lesson_context, retrieve_outline_context
 
@@ -150,6 +151,24 @@ def run_pipeline(args: Namespace, progress: Optional[ProgressCallback] = None) -
         quality_score=quality,
     )
 
+    paths = {
+        "course_html": course_path,
+        "outline": outline_path,
+        "pretest": pretest_path,
+        "quiz": quiz_path,
+        "summaries": summaries_path,
+        "markdown": markdown_path,
+        "metadata": metadata_path,
+        "bundle": bundle_path,
+        "report": report_path,
+    }
+
+    zip_path = ""
+    if not getattr(args, "no_delivery_zip", False):
+        _notify(progress, "zip", "Packaging delivery ZIP")
+        zip_path = create_delivery_zip(paths, args.output_dir, args.output_prefix)
+        paths["delivery_zip"] = zip_path
+
     _notify(progress, "done", f"Finished in {elapsed:.1f}s — quality {quality['overall_score']}/100")
 
     return {
@@ -161,17 +180,7 @@ def run_pipeline(args: Namespace, progress: Optional[ProgressCallback] = None) -
         "course_html": course_html,
         "markdown_summary": markdown_summary,
         "quality": quality,
-        "paths": {
-            "course_html": course_path,
-            "outline": outline_path,
-            "pretest": pretest_path,
-            "quiz": quiz_path,
-            "summaries": summaries_path,
-            "markdown": markdown_path,
-            "metadata": metadata_path,
-            "bundle": bundle_path,
-            "report": report_path,
-        },
+        "paths": paths,
         "elapsed_seconds": round(elapsed, 2),
         "outline_rag_used": outline_rag_used,
     }

@@ -89,6 +89,7 @@ def parse_args() -> argparse.Namespace:
         default=int(os.getenv("OUTLINE_RAG_MAX_CHARS", DEFAULT_OUTLINE_RAG_MAX_CHARS)),
     )
     parser.add_argument("--check-ollama", action="store_true", help="Check Ollama connectivity and model availability, then exit.")
+    parser.add_argument("--no-delivery-zip", action="store_true", help="Do not create course_delivery.zip after generation.")
     return parser.parse_args()
 
 
@@ -148,10 +149,14 @@ def main() -> None:
     print(f"Metadata:           {paths['metadata']}")
     print(f"Bundle:             {paths['bundle']}")
     print(f"Report:             {paths['report']}")
+    if paths.get("delivery_zip"):
+        print(f"Delivery ZIP:       {paths['delivery_zip']}")
     print(f"Time:               {result['elapsed_seconds']:.2f}s")
     quality = result.get("quality", {})
     if quality:
         print(f"Quality score:      {quality.get('overall_score', 'n/a')}/100 (grade {quality.get('grade', '-')})")
+        for tip in quality.get("recommendations", []):
+            print(f"  → {tip}")
 
     log_message(
         args.log_dir,
