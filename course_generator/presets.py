@@ -40,3 +40,22 @@ PRESETS: Dict[str, Dict[str, Any]] = {
 }
 
 PRESET_NAMES = ["Custom"] + list(PRESETS.keys())
+
+# CLI slugs: python main.py --preset quick
+PRESET_CLI_SLUGS = {
+    "quick": "Quick draft",
+    "full": "Full course",
+    "outline": "Outline only (fast)",
+}
+
+
+def apply_cli_preset(args) -> None:
+    """Override argparse Namespace fields from a CLI preset slug."""
+    slug = getattr(args, "preset", None)
+    if not slug:
+        return
+    preset_name = PRESET_CLI_SLUGS.get(slug)
+    if not preset_name:
+        raise ValueError(f"Unknown preset '{slug}'. Choose from: {', '.join(PRESET_CLI_SLUGS)}")
+    for key, value in PRESETS[preset_name].items():
+        setattr(args, key, value)

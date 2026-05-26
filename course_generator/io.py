@@ -54,6 +54,13 @@ def save_markdown_summary(output_dir: str, markdown_text: str, output_prefix: st
     return save_text(build_output_path(output_dir, "course_summary.md", output_prefix), markdown_text)
 
 
+def save_course_docx(output_dir: str, markdown_text: str, output_prefix: str = "") -> str:
+    from course_generator.docx_export import export_markdown_to_docx
+
+    path = build_output_path(output_dir, "course_summary.docx", output_prefix)
+    return export_markdown_to_docx(markdown_text, path)
+
+
 def save_lesson_summaries(output_dir: str, lesson_payloads: List[Dict[str, Any]], outline: Dict[str, Any], output_prefix: str = "") -> str:
     path = build_output_path(output_dir, "lesson_summaries.json", output_prefix)
     lessons = outline.get("lessons", [])
@@ -111,6 +118,7 @@ def save_generation_report(
         "outline_rag_used": outline_rag_used,
         "skip_outline_rag": getattr(args, "skip_outline_rag", False),
         "quality": quality_score or {},
+        "llm_quality_review": (quality_score or {}).get("llm_review", ""),
     }
     return save_json(path, report)
 

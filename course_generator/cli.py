@@ -30,8 +30,9 @@ from course_generator.constants import (
     SUPPORTED_EXTENSIONS,
 )
 from course_generator.documents import collect_source_files
-from course_generator.health import check_ollama
+from course_generator.health import check_ollama, list_ollama_models
 from course_generator.pipeline import run_pipeline
+from course_generator.presets import PRESET_CLI_SLUGS, apply_cli_preset
 
 load_dotenv()
 
@@ -90,6 +91,15 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--check-ollama", action="store_true", help="Check Ollama connectivity and model availability, then exit.")
     parser.add_argument("--no-delivery-zip", action="store_true", help="Do not create course_delivery.zip after generation.")
+    parser.add_argument(
+        "--preset",
+        choices=list(PRESET_CLI_SLUGS.keys()),
+        default=None,
+        help="Apply a named preset (quick, full, outline) before other flags.",
+    )
+    parser.add_argument("--list-models", action="store_true", help="List Ollama models and exit.")
+    parser.add_argument("--export-docx", action="store_true", help="Also export course_summary.docx.")
+    parser.add_argument("--quality-llm-review", action="store_true", help="Add LLM narrative quality review to the report.")
     return parser.parse_args()
 
 
@@ -109,6 +119,20 @@ def log_message(log_dir: str, message: str) -> None:
 def main() -> None:
     args = parse_args()
 
+    if args.list_models:
+        try:
+            models = list_ollama_models()
+        except Exception as exc:
+            print(f"(X) Could not list models: {exc}")
+            sys.exit(1)
+        if not models:
+            print("(X) No models returned from Ollama.")
+            sys.exit(1)
+        print("Available Ollama models:")
+        for name in models:
+            print(f"  - {name}")
+        sys.exit(0)
+
     if args.check_ollama:
         info = check_ollama(args.model)
         if not info.get("ok"):
@@ -119,6 +143,12 @@ def main() -> None:
             sys.exit(1)
         print(f"[OK] Ollama reachable. Model '{args.model}' is available.")
         sys.exit(0)
+
+    try:
+        apply_cli_preset(args)
+    except ValueError as exc:
+        print(f"(X) {exc}")
+        sys.exit(1)
 
     ensure_directories(args.docs_path, args.db, args.manifest_file, args.output_dir, args.log_dir)
 
@@ -149,6 +179,8 @@ def main() -> None:
     print(f"Metadata:           {paths['metadata']}")
     print(f"Bundle:             {paths['bundle']}")
     print(f"Report:             {paths['report']}")
+    if paths.get("docx"):
+        print(f"Course DOCX:        {paths['docx']}")
     if paths.get("delivery_zip"):
         print(f"Delivery ZIP:       {paths['delivery_zip']}")
     print(f"Time:               {result['elapsed_seconds']:.2f}s")
@@ -157,6 +189,9 @@ def main() -> None:
         print(f"Quality score:      {quality.get('overall_score', 'n/a')}/100 (grade {quality.get('grade', '-')})")
         for tip in quality.get("recommendations", []):
             print(f"  → {tip}")
+        if quality.get("llm_review"):
+            print("\nLLM quality review:")
+            print(quality["llm_review"])
 
     log_message(
         args.log_dir,

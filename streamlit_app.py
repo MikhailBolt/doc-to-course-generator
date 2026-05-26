@@ -32,6 +32,7 @@ from course_generator.constants import (
     DEFAULT_TOP_K,
     SUPPORTED_EXTENSIONS,
 )
+from course_generator.history import list_recent_reports
 from course_generator.pipeline import run_pipeline
 
 
@@ -72,6 +73,8 @@ def _make_args(
     outline_rag_max_chunks: int,
     outline_rag_max_chars: int,
     max_preview_chars_per_file: int,
+    export_docx: bool,
+    quality_llm_review: bool,
 ) -> Namespace:
     return Namespace(
         docs_path=docs_path,
@@ -101,6 +104,10 @@ def _make_args(
         skip_outline_rag=skip_outline_rag,
         outline_rag_max_chunks=outline_rag_max_chunks,
         outline_rag_max_chars=outline_rag_max_chars,
+        export_docx=export_docx,
+        quality_llm_review=quality_llm_review,
+        no_delivery_zip=False,
+        preset=None,
     )
 
 
@@ -224,6 +231,8 @@ def main() -> None:
             value=bool(preset_cfg.get("disable_review_pass", False)),
         )
         rebuild = st.checkbox("Force rebuild FAISS index", value=False)
+        export_docx = st.checkbox("Export DOCX summary", value=False)
+        quality_llm_review = st.checkbox("LLM quality review (extra LLM call)", value=False)
 
         st.header("Outline grounding (RAG)")
         skip_outline_rag = st.checkbox("Skip outline RAG", value=bool(preset_cfg.get("skip_outline_rag", False)))
@@ -236,6 +245,10 @@ def main() -> None:
 
     if not run_btn:
         st.info("Pick a source (upload or docs folder), then click **Generate**.")
+        recent = list_recent_reports(DEFAULT_OUTPUT_DIR, limit=6)
+        if recent:
+            st.subheader("Recent runs")
+            st.dataframe(recent, use_container_width=True, hide_index=True)
         return
 
     if int(min_lessons) > int(max_lessons):
@@ -289,6 +302,8 @@ def main() -> None:
         outline_rag_max_chunks=int(outline_rag_max_chunks),
         outline_rag_max_chars=int(outline_rag_max_chars),
         max_preview_chars_per_file=int(max_preview_chars_per_file),
+        export_docx=bool(export_docx),
+        quality_llm_review=bool(quality_llm_review),
     )
 
     ensure_directories(args.docs_path, args.db, args.manifest_file, args.output_dir, args.log_dir)
@@ -332,6 +347,10 @@ def main() -> None:
             for tip in recs:
                 st.markdown(f"- {tip}")
 
+    if quality.get("llm_review"):
+        with st.expander("LLM quality review", expanded=True):
+            st.markdown(quality["llm_review"])
+
     col_a, col_b = st.columns([1, 1])
 
     with col_a:
@@ -348,6 +367,15 @@ def main() -> None:
             p = Path(paths[key])
             if p.exists():
                 st.download_button(label, data=p.read_bytes(), file_name=p.name, mime=mime)
+
+        docx_p = paths.get("docx")
+        if docx_p and Path(docx_p).exists():
+            st.download_button(
+                "Course summary (DOCX)",
+                data=Path(docx_p).read_bytes(),
+                file_name=Path(docx_p).name,
+                mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            )
 
         zip_p = paths.get("delivery_zip")
         if zip_p and Path(zip_p).exists():

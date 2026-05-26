@@ -16,6 +16,7 @@ from course_generator.generation import (
 from course_generator.html_export import build_course_html, build_markdown_summary
 from course_generator.io import (
     save_course_bundle,
+    save_course_docx,
     save_course_html,
     save_course_metadata,
     save_generation_report,
@@ -25,6 +26,7 @@ from course_generator.io import (
     save_pretest_json,
     save_quiz_json,
 )
+from course_generator.llm_review import llm_quality_review
 from course_generator.export import create_delivery_zip
 from course_generator.quality import compute_quality_score
 from course_generator.rag import load_or_create_vectorstore, retrieve_lesson_context, retrieve_outline_context
@@ -129,6 +131,10 @@ def run_pipeline(args: Namespace, progress: Optional[ProgressCallback] = None) -
         outline_rag_used=outline_rag_used,
     )
 
+    if getattr(args, "quality_llm_review", False):
+        _notify(progress, "quality_llm_review", "LLM narrative quality review")
+        quality["llm_review"] = llm_quality_review(llm, outline, quality, args.language)
+
     course_path = save_course_html(args.output_dir, course_html, args.output_prefix)
     outline_path = save_outline_json(args.output_dir, outline, args.output_prefix)
     quiz_path = save_quiz_json(args.output_dir, quiz_data, args.output_prefix)
@@ -136,6 +142,10 @@ def run_pipeline(args: Namespace, progress: Optional[ProgressCallback] = None) -
     metadata_path = save_course_metadata(args.output_dir, outline, docs_info, args)
     summaries_path = save_lesson_summaries(args.output_dir, lesson_payloads, outline, args.output_prefix)
     markdown_path = save_markdown_summary(args.output_dir, markdown_summary, args.output_prefix)
+    docx_path = ""
+    if getattr(args, "export_docx", False):
+        _notify(progress, "docx", "Exporting DOCX summary")
+        docx_path = save_course_docx(args.output_dir, markdown_summary, args.output_prefix)
     bundle_path = save_course_bundle(args.output_dir, outline, docs_info, lesson_payloads, pretest_data, quiz_data, args)
 
     elapsed = time.time() - started
@@ -162,6 +172,8 @@ def run_pipeline(args: Namespace, progress: Optional[ProgressCallback] = None) -
         "bundle": bundle_path,
         "report": report_path,
     }
+    if docx_path:
+        paths["docx"] = docx_path
 
     zip_path = ""
     if not getattr(args, "no_delivery_zip", False):

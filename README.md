@@ -21,6 +21,8 @@ Generate a structured **HTML training course** and **assessment quizzes** from d
 - **Delivery ZIP** (`course_delivery.zip`) with all artifacts
 - **Streamlit presets** (Quick draft / Full course / Outline only)
 - **Quality recommendations** after each run
+- **Optional DOCX export** and **LLM quality narrative**
+- **CLI presets** (`--preset quick|full|outline`)
 
 ---
 
@@ -55,6 +57,14 @@ Check Ollama before a long run:
 
 ```
 python main.py --check-ollama --model llama3
+python main.py --list-models
+```
+
+Use a preset:
+
+```
+python main.py --docs-path docs --preset full
+python main.py --docs-path docs --preset quick --export-docx --quality-llm-review
 ```
 
 Advanced:
@@ -101,6 +111,7 @@ OUTLINE_RAG_MAX_CHARS=12000
 - course_bundle.json  
 - `generation_report.json` (includes **quality** breakdown)
 - `course_delivery.zip` (all of the above in one archive)
+- `course_summary.docx` (optional, `--export-docx`)
 
 ---
 
@@ -113,9 +124,14 @@ OUTLINE_RAG_MAX_CHARS=12000
 
 ---
 
+## 🧪 Tests
+
+```
+py -3 -m pytest tests/ -q
+```
+
 ## 🛣 Future improvements
 
 - Multi-agent generation pipeline
-- Export to PDF / DOCX
-- LLM-based quality review (beyond heuristics)
+- Export to PDF
 - Persisted user presets in the UI
