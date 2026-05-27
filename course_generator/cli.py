@@ -29,7 +29,6 @@ from course_generator.constants import (
     DEFAULT_TOP_K,
     SUPPORTED_EXTENSIONS,
 )
-from course_generator.documents import collect_source_files
 from course_generator.health import check_ollama, list_ollama_models
 from course_generator.pipeline import run_pipeline
 from course_generator.presets import PRESET_CLI_SLUGS, apply_cli_preset
@@ -99,8 +98,12 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--list-models", action="store_true", help="List Ollama models and exit.")
     parser.add_argument("--export-docx", action="store_true", help="Also export course_summary.docx.")
-    parser.add_argument("--quality-llm-review", action="store_true", help="Add LLM narrative quality review to the report.")
-    return parser.parse_args()
+    parser.add_argument(
+        "--recursive-docs",
+        action=argparse.BooleanOptionalAction,
+        default=os.getenv("DOCS_RECURSIVE", "").lower() in {"1", "true", "yes"},
+        help="Include supported files in docs subfolders (default: from DOCS_RECURSIVE env).",
+    )
 
 
 def _cli_progress(stage: str, detail: str) -> None:
@@ -158,9 +161,6 @@ def main() -> None:
 
     log_message(args.log_dir, "Starting course and quiz generation pipeline")
     try:
-        # NOTE: We keep CLI output roughly the same, but delegate work to the shared pipeline.
-        source_files = collect_source_files(args.docs_path)
-        print(f"Found {len(source_files)} source file(s).")
         print("--- Running generation pipeline... ---")
         result = run_pipeline(args, progress=_cli_progress)
     except Exception as exc:
@@ -169,7 +169,9 @@ def main() -> None:
         sys.exit(1)
 
     paths = result["paths"]
+    n_docs = len(result.get("docs_info", []))
     print("\n[SUCCESS] Generation complete!")
+    print(f"Documents indexed: {n_docs} file(s)")
     print(f"Course HTML:        {paths['course_html']}")
     print(f"Course outline:     {paths['outline']}")
     print(f"Pre-test JSON:      {paths['pretest']}")

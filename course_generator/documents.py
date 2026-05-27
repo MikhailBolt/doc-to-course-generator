@@ -2,15 +2,27 @@ import hashlib
 import json
 import sys
 from pathlib import Path
-from typing import Any, Dict, List
-
-from langchain_community.document_loaders import PyPDFLoader, TextLoader
+from typing import Any, Dict, List, NamedTuple, Optional
 
 from course_generator.constants import SUPPORTED_EXTENSIONS
 from course_generator.utils import clean_text
 
 
-def collect_source_files(docs_path: str) -> List[Path]:
+class DocCollection(NamedTuple):
+    """Collected source files plus the root used for relative display names."""
+
+    files: List[Path]
+    root: Path
+
+
+def document_display_name(file_path: Path, labels_base: Path) -> str:
+    try:
+        return str(file_path.resolve().relative_to(labels_base.resolve())).replace("\\", "/")
+    except ValueError:
+        return file_path.name
+
+
+def collect_source_files(docs_path: str, *, recursive: bool = False) -> DocCollection:
     path = Path(docs_path)
 
     if not path.exists():
@@ -21,14 +33,26 @@ def collect_source_files(docs_path: str) -> List[Path]:
         if path.suffix.lower() not in SUPPORTED_EXTENSIONS:
             print(f"(X) Error: '{docs_path}' is not a supported file type.")
             sys.exit(1)
-        return [path]
+        return DocCollection(files=[path], root=path.parent.resolve())
 
-    source_files = sorted([p for p in path.iterdir() if p.is_file() and p.suffix.lower() in SUPPORTED_EXTENSIONS])
+    root = path.resolve()
+
+    def matching_files() -> List[Path]:
+        if recursive:
+            found: List[Path] = []
+            for p in sorted(root.rglob("*")):
+                if p.is_file() and p.suffix.lower() in SUPPORTED_EXTENSIONS:
+                    found.append(p)
+            return found
+        return sorted([p for p in root.iterdir() if p.is_file() and p.suffix.lower() in SUPPORTED_EXTENSIONS])
+
+    source_files = matching_files()
     if not source_files:
-        print(f"(X) Error: No supported files found in '{docs_path}'.")
+        hint = " (try --recursive-docs for subfolders)" if not recursive else ""
+        print(f"(X) Error: No supported files found in '{docs_path}'.{hint}")
         sys.exit(1)
 
-    return source_files
+    return DocCollection(files=source_files, root=root)
 
 
 def file_fingerprint(file_path: Path) -> str:
@@ -79,32 +103,47 @@ def is_index_stale(source_files: List[Path], db_path: str, manifest_file: str) -
     return current_manifest != saved_manifest
 
 
-def load_file_documents(file_path: Path) -> List[Any]:
+def load_file_documents(file_path: Path, *, labels_base: Optional[Path] = None) -> List[Any]:
     suffix = file_path.suffix.lower()
     if suffix == ".pdf":
+        from langchain_community.document_loaders import PyPDFLoader
+
         loader = PyPDFLoader(str(file_path))
         docs = loader.load()
     elif suffix in {".txt", ".md"}:
+        from langchain_community.document_loaders import TextLoader
+
         loader = TextLoader(str(file_path), encoding="utf-8")
         docs = loader.load()
     else:
         raise ValueError(f"Unsupported file type: {suffix}")
 
+    base = labels_base.resolve() if labels_base else None
+    doc_name = document_display_name(file_path, base) if base else file_path.name
+
     for doc in docs:
-        doc.metadata["document_name"] = file_path.name
+        doc.metadata["document_name"] = doc_name
         doc.metadata["document_path"] = str(file_path.resolve())
         doc.metadata["document_type"] = suffix.lstrip(".")
+        if base:
+            doc.metadata["document_relative"] = doc_name
     return docs
 
 
-def get_combined_preview_text(source_files: List[Path], max_chars_per_file: int = 6000) -> str:
+def get_combined_preview_text(
+    source_files: List[Path],
+    *,
+    labels_base: Optional[Path],
+    max_chars_per_file: int = 6000,
+) -> str:
     parts = []
     for file_path in source_files:
+        label = document_display_name(file_path, labels_base) if labels_base else file_path.name
         try:
-            docs = load_file_documents(file_path)
+            docs = load_file_documents(file_path, labels_base=labels_base)
             joined = "\n".join(doc.page_content for doc in docs)
             joined = clean_text(joined)[:max_chars_per_file]
-            parts.append(f"\n===== DOCUMENT: {file_path.name} =====\n{joined}\n")
+            parts.append(f"\n===== DOCUMENT: {label} =====\n{joined}\n")
         except Exception as exc:
-            parts.append(f"\n===== DOCUMENT: {file_path.name} =====\nFailed to read document: {exc}\n")
+            parts.append(f"\n===== DOCUMENT: {label} =====\nFailed to read document: {exc}\n")
     return "\n".join(parts)

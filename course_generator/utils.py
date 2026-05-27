@@ -2,8 +2,6 @@ import json
 import re
 from typing import Any, Dict, List
 
-from langchain_ollama import OllamaLLM
-
 
 def clean_text(text: str) -> str:
     text = re.sub(r"\r", "", text)
@@ -93,6 +91,6 @@ def ensure_minimum_quiz_coverage(quiz_data: List[Dict[str, Any]], lesson_titles:
     }
 
 
-def call_llm(llm: OllamaLLM, prompt: str) -> str:
+def call_llm(llm: Any, prompt: str) -> str:
     response = llm.invoke(prompt)
     return response.strip() if isinstance(response, str) else str(response).strip()

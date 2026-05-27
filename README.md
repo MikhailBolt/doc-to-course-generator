@@ -23,6 +23,8 @@ Generate a structured **HTML training course** and **assessment quizzes** from d
 - **Quality recommendations** after each run
 - **Optional DOCX export** and **LLM quality narrative**
 - **CLI presets** (`--preset quick|full|outline`)
+- **Recursive docs** (`--recursive-docs` / `DOCS_RECURSIVE` / Streamlit “Scan subfolders”)
+- Relative source labels in RAG for nested files (fewer name collisions)
 
 ---
 
@@ -67,6 +69,13 @@ python main.py --docs-path docs --preset full
 python main.py --docs-path docs --preset quick --export-docx --quality-llm-review
 ```
 
+Include supported files in subfolders when `docs-path` is a directory:
+
+```
+python main.py --docs-path docs --recursive-docs
+python main.py --docs-path docs --no-recursive-docs
+```
+
 Advanced:
 
 ```
@@ -94,6 +103,9 @@ PRETEST_QUESTIONS=5
 DIFFICULTY=medium
 RETRIEVAL_TYPE=similarity
 LANGUAGE=en
+
+# Optional: collect PDF/TXT/MD from subfolders when docs-path is a directory
+DOCS_RECURSIVE=false
 
 # Optional: outline grounding via FAISS retrieval
 OUTLINE_RAG_MAX_CHUNKS=28
@@ -127,8 +139,11 @@ OUTLINE_RAG_MAX_CHARS=12000
 ## 🧪 Tests
 
 ```
-py -3 -m pytest tests/ -q
+pip install -r requirements-dev.txt
+pytest tests/ -q
 ```
+
+Push/PR to `main`: workflow `.github/workflows/ci.yml` installs deps and runs `pytest`.
 
 ## 🛣 Future improvements
 

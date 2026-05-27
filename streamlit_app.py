@@ -75,6 +75,7 @@ def _make_args(
     max_preview_chars_per_file: int,
     export_docx: bool,
     quality_llm_review: bool,
+    recursive_docs: bool,
 ) -> Namespace:
     return Namespace(
         docs_path=docs_path,
@@ -108,6 +109,7 @@ def _make_args(
         quality_llm_review=quality_llm_review,
         no_delivery_zip=False,
         preset=None,
+        recursive_docs=recursive_docs,
     )
 
 
@@ -151,6 +153,7 @@ def main() -> None:
 
         uploaded_files: List[Any] = []
         docs_path: Optional[str] = None
+        recursive_docs = False
 
         if source_mode == "Upload files":
             uploaded_files = st.file_uploader(
@@ -160,6 +163,10 @@ def main() -> None:
             )
         else:
             docs_path = st.text_input("Docs path", value=os.getenv("DOCS_PATH", DEFAULT_DOCS_PATH))
+            recursive_docs = st.checkbox(
+                "Scan subfolders",
+                value=os.getenv("DOCS_RECURSIVE", "").lower() in {"1", "true", "yes"},
+            )
 
         st.header("Generation")
         preset_name = st.selectbox("Preset", PRESET_NAMES, index=0)
@@ -304,6 +311,7 @@ def main() -> None:
         max_preview_chars_per_file=int(max_preview_chars_per_file),
         export_docx=bool(export_docx),
         quality_llm_review=bool(quality_llm_review),
+        recursive_docs=bool(recursive_docs),
     )
 
     ensure_directories(args.docs_path, args.db, args.manifest_file, args.output_dir, args.log_dir)

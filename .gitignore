@@ -19,6 +19,9 @@ output/
 logs/
 vectorstore/
 
+# pytest
+.pytest_cache/
+
 # Streamlit
 .streamlit/
 

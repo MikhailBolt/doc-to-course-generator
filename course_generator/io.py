@@ -117,6 +117,7 @@ def save_generation_report(
         "include_source_excerpts": args.include_source_excerpts,
         "outline_rag_used": outline_rag_used,
         "skip_outline_rag": getattr(args, "skip_outline_rag", False),
+        "recursive_docs": getattr(args, "recursive_docs", False),
         "quality": quality_score or {},
         "llm_quality_review": (quality_score or {}).get("llm_review", ""),
     }

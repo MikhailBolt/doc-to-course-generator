@@ -9,6 +9,7 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 from course_generator.constants import DEFAULT_OUTLINE_RAG_MAX_CHARS, DEFAULT_OUTLINE_RAG_MAX_CHUNKS, DEFAULT_OUTLINE_RAG_TOP_K_PER_QUERY
 from course_generator.documents import (
     build_manifest_data,
+    document_display_name,
     is_index_stale,
     load_file_documents,
     save_manifest,
@@ -24,6 +25,7 @@ def retrieve_outline_context(
     vectorstore: FAISS,
     source_files: List[Path],
     *,
+    labels_base: Path,
     retrieval_type: str,
     top_k_per_query: int = DEFAULT_OUTLINE_RAG_TOP_K_PER_QUERY,
     max_chunks: int = DEFAULT_OUTLINE_RAG_MAX_CHUNKS,
@@ -63,7 +65,8 @@ def retrieve_outline_context(
     for path in source_files:
         if len(collected) >= max_chunks:
             break
-        q = f"important content concepts from document {path.name}"
+        label = document_display_name(path, labels_base)
+        q = f"important content concepts from document {label}"
         if retrieval_type == "mmr":
             docs = vectorstore.max_marginal_relevance_search(q, k=4, fetch_k=12)
         else:
@@ -92,19 +95,21 @@ def build_vectorstore(
     embedding_model: str,
     chunk_size: int,
     chunk_overlap: int,
+    *,
+    labels_base: Path,
 ) -> Tuple[FAISS, List[Dict[str, Any]]]:
     print("--- Processing source files and building vector DB... ---")
     all_documents = []
     docs_info = []
 
     for file_path in source_files:
-        documents = load_file_documents(file_path)
+        documents = load_file_documents(file_path, labels_base=labels_base)
         if not documents:
-            print(f"(!) Skipping '{file_path.name}': no text extracted.")
+            print(f"(!) Skipping '{document_display_name(file_path, labels_base)}': no text extracted.")
             continue
 
         docs_info.append({
-            "name": file_path.name,
+            "name": document_display_name(file_path, labels_base),
             "path": str(file_path.resolve()),
             "pages": len(documents),
             "type": file_path.suffix.lower().lstrip("."),
@@ -133,17 +138,22 @@ def build_vectorstore(
     return vectorstore, docs_info
 
 
-def load_or_create_vectorstore(args: Namespace, source_files: List[Path]) -> Tuple[FAISS, List[Dict[str, Any]]]:
+def load_or_create_vectorstore(
+    args: Namespace,
+    source_files: List[Path],
+    *,
+    labels_base: Path,
+) -> Tuple[FAISS, List[Dict[str, Any]]]:
     should_rebuild = args.rebuild or is_index_stale(source_files, args.db, args.manifest_file)
     docs_info = []
 
     for f in source_files:
         try:
-            docs_count = len(load_file_documents(f))
+            docs_count = len(load_file_documents(f, labels_base=labels_base))
         except Exception:
             docs_count = 0
         docs_info.append({
-            "name": f.name,
+            "name": document_display_name(f, labels_base),
             "path": str(f.resolve()),
             "pages": docs_count,
             "type": f.suffix.lower().lstrip("."),
@@ -161,6 +171,7 @@ def load_or_create_vectorstore(args: Namespace, source_files: List[Path]) -> Tup
             embedding_model=args.embedding_model,
             chunk_size=args.chunk_size,
             chunk_overlap=args.chunk_overlap,
+            labels_base=labels_base,
         )
 
     print("--- Loading existing vector DB... ---")
@@ -177,6 +188,7 @@ def load_or_create_vectorstore(args: Namespace, source_files: List[Path]) -> Tup
             embedding_model=args.embedding_model,
             chunk_size=args.chunk_size,
             chunk_overlap=args.chunk_overlap,
+            labels_base=labels_base,
         )
 
 

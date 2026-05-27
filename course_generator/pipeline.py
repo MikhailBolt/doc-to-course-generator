@@ -49,15 +49,21 @@ def run_pipeline(args: Namespace, progress: Optional[ProgressCallback] = None) -
     started = time.time()
 
     _notify(progress, "load_documents", "Collecting source files")
-    source_files = collect_source_files(args.docs_path)
+    dc = collect_source_files(args.docs_path, recursive=getattr(args, "recursive_docs", False))
+    source_files = dc.files
+    labels_base = dc.root
     _notify(progress, "vectorstore", f"Building or loading FAISS index ({len(source_files)} file(s))")
-    vectorstore, docs_info = load_or_create_vectorstore(args, source_files)
+    vectorstore, docs_info = load_or_create_vectorstore(args, source_files, labels_base=labels_base)
 
     _notify(progress, "llm", f"Connecting to Ollama model: {args.model}")
     llm = OllamaLLM(model=args.model)
 
     _notify(progress, "outline", "Generating course outline")
-    preview_text = get_combined_preview_text(source_files, max_chars_per_file=args.max_preview_chars_per_file)
+    preview_text = get_combined_preview_text(
+        source_files,
+        labels_base=labels_base,
+        max_chars_per_file=args.max_preview_chars_per_file,
+    )
     rag_context = ""
     outline_rag_used = False
     if not args.skip_outline_rag:
@@ -65,6 +71,7 @@ def run_pipeline(args: Namespace, progress: Optional[ProgressCallback] = None) -
         rag_context = retrieve_outline_context(
             vectorstore,
             source_files,
+            labels_base=labels_base,
             retrieval_type=args.retrieval_type,
             max_chunks=args.outline_rag_max_chunks,
             max_chars=args.outline_rag_max_chars,
