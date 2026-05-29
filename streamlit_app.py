@@ -34,6 +34,7 @@ from course_generator.constants import (
 )
 from course_generator.history import list_recent_reports
 from course_generator.pipeline import run_pipeline
+from course_generator.user_settings import load_user_settings, save_user_settings
 
 
 def _save_uploads(uploaded_files: List[Any], target_dir: Path) -> None:
@@ -76,6 +77,9 @@ def _make_args(
     export_docx: bool,
     quality_llm_review: bool,
     recursive_docs: bool,
+    dry_run: bool,
+    outline_only: bool,
+    from_outline: Optional[str],
 ) -> Namespace:
     return Namespace(
         docs_path=docs_path,
@@ -110,6 +114,9 @@ def _make_args(
         no_delivery_zip=False,
         preset=None,
         recursive_docs=recursive_docs,
+        dry_run=dry_run,
+        outline_only=outline_only,
+        from_outline=from_outline or None,
     )
 
 
@@ -119,9 +126,11 @@ def main() -> None:
     st.title("Doc-to-Course Generator")
     st.caption("Generate an HTML training course + quizzes from PDF/TXT/MD using local Ollama + FAISS RAG.")
 
+    saved = load_user_settings()
+
     with st.sidebar:
         st.header("Ollama")
-        model_default = os.getenv("LLM_MODEL", DEFAULT_LLM_MODEL)
+        model_default = saved.get("model") or os.getenv("LLM_MODEL", DEFAULT_LLM_MODEL)
         ollama_models: List[str] = []
         try:
             ollama_models = list_ollama_models(timeout=3)
@@ -162,23 +171,48 @@ def main() -> None:
                 accept_multiple_files=True,
             )
         else:
-            docs_path = st.text_input("Docs path", value=os.getenv("DOCS_PATH", DEFAULT_DOCS_PATH))
+            docs_default = saved.get("docs_path") or os.getenv("DOCS_PATH", DEFAULT_DOCS_PATH)
+            docs_path = st.text_input("Docs path", value=docs_default)
             recursive_docs = st.checkbox(
                 "Scan subfolders",
-                value=os.getenv("DOCS_RECURSIVE", "").lower() in {"1", "true", "yes"},
+                value=saved.get(
+                    "recursive_docs",
+                    os.getenv("DOCS_RECURSIVE", "").lower() in {"1", "true", "yes"},
+                ),
             )
 
         st.header("Generation")
-        preset_name = st.selectbox("Preset", PRESET_NAMES, index=0)
+        preset_default = saved.get("preset", PRESET_NAMES[0])
+        preset_index = PRESET_NAMES.index(preset_default) if preset_default in PRESET_NAMES else 0
+        preset_name = st.selectbox("Preset", PRESET_NAMES, index=preset_index)
         preset_cfg = PRESETS.get(preset_name, {}) if preset_name != "Custom" else {}
 
-        language = st.selectbox("Language", ["en", "ru"], index=0 if DEFAULT_LANGUAGE == "en" else 1)
-        difficulty = st.selectbox("Difficulty", ["easy", "medium", "hard"], index=1)
-        embedding_model = st.text_input("Embedding model", value=os.getenv("EMBEDDING_MODEL", DEFAULT_EMBEDDING_MODEL))
-        retrieval_type = st.selectbox("Retrieval", ["similarity", "mmr"], index=0 if DEFAULT_RETRIEVAL_TYPE == "similarity" else 1)
+        lang_default = saved.get("language", DEFAULT_LANGUAGE)
+        language = st.selectbox("Language", ["en", "ru"], index=0 if lang_default == "en" else 1)
+        diff_default = saved.get("difficulty", "medium")
+        diff_index = ["easy", "medium", "hard"].index(diff_default) if diff_default in ("easy", "medium", "hard") else 1
+        difficulty = st.selectbox("Difficulty", ["easy", "medium", "hard"], index=diff_index)
+        embedding_model = st.text_input(
+            "Embedding model",
+            value=saved.get("embedding_model") or os.getenv("EMBEDDING_MODEL", DEFAULT_EMBEDDING_MODEL),
+        )
+        ret_default = saved.get("retrieval_type", DEFAULT_RETRIEVAL_TYPE)
+        retrieval_type = st.selectbox("Retrieval", ["similarity", "mmr"], index=0 if ret_default == "similarity" else 1)
 
-        chunk_size = st.number_input("Chunk size", min_value=200, max_value=4000, value=DEFAULT_CHUNK_SIZE, step=50)
-        chunk_overlap = st.number_input("Chunk overlap", min_value=0, max_value=2000, value=DEFAULT_CHUNK_OVERLAP, step=50)
+        chunk_size = st.number_input(
+            "Chunk size",
+            min_value=200,
+            max_value=4000,
+            value=int(saved.get("chunk_size", DEFAULT_CHUNK_SIZE)),
+            step=50,
+        )
+        chunk_overlap = st.number_input(
+            "Chunk overlap",
+            min_value=0,
+            max_value=2000,
+            value=int(saved.get("chunk_overlap", DEFAULT_CHUNK_OVERLAP)),
+            step=50,
+        )
         top_k = st.number_input(
             "Top-k chunks per lesson",
             min_value=1,
@@ -246,7 +280,22 @@ def main() -> None:
         outline_rag_max_chunks = st.number_input("Outline RAG max chunks", min_value=0, max_value=200, value=DEFAULT_OUTLINE_RAG_MAX_CHUNKS, step=1)
         outline_rag_max_chars = st.number_input("Outline RAG max chars", min_value=1000, max_value=100000, value=DEFAULT_OUTLINE_RAG_MAX_CHARS, step=1000)
 
-        output_prefix = st.text_input("Output prefix", value=os.getenv("OUTPUT_PREFIX", DEFAULT_OUTPUT_PREFIX))
+        output_prefix = st.text_input(
+            "Output prefix",
+            value=saved.get("output_prefix") or os.getenv("OUTPUT_PREFIX", DEFAULT_OUTPUT_PREFIX),
+        )
+
+        st.header("Run mode")
+        dry_run = st.checkbox("Dry run (list files, no LLM)", value=False)
+        outline_only = st.checkbox(
+            "Outline only",
+            value=bool(preset_cfg.get("outline_only", False)),
+        )
+        from_outline = st.text_input(
+            "Resume from outline JSON (optional)",
+            value=saved.get("from_outline", ""),
+            placeholder="output/course_outline.json",
+        )
 
         run_btn = st.button("Generate", type="primary", use_container_width=True)
 
@@ -262,13 +311,18 @@ def main() -> None:
         st.error("Min lessons must be ≤ max lessons.")
         return
 
-    ollama_info = check_ollama(model)
-    if not ollama_info.get("ok"):
-        st.error(f"Start Ollama first (could not reach {ollama_info.get('host')}): {ollama_info.get('error', '')}")
+    if outline_only and from_outline and from_outline.strip():
+        st.error("Choose either **Outline only** or **Resume from outline**, not both.")
         return
-    if not ollama_info.get("model_available"):
-        st.error(f"Model `{model}` is not available in Ollama. Run `ollama pull {model}` or pick another model.")
-        return
+
+    if not dry_run:
+        ollama_info = check_ollama(model)
+        if not ollama_info.get("ok"):
+            st.error(f"Start Ollama first (could not reach {ollama_info.get('host')}): {ollama_info.get('error', '')}")
+            return
+        if not ollama_info.get("model_available"):
+            st.error(f"Model `{model}` is not available in Ollama. Run `ollama pull {model}` or pick another model.")
+            return
 
     if source_mode == "Upload files":
         if not uploaded_files:
@@ -312,9 +366,29 @@ def main() -> None:
         export_docx=bool(export_docx),
         quality_llm_review=bool(quality_llm_review),
         recursive_docs=bool(recursive_docs),
+        dry_run=bool(dry_run),
+        outline_only=bool(outline_only),
+        from_outline=from_outline.strip() if from_outline and from_outline.strip() else None,
     )
 
     ensure_directories(args.docs_path, args.db, args.manifest_file, args.output_dir, args.log_dir)
+
+    save_user_settings(
+        {
+            "model": model,
+            "embedding_model": embedding_model,
+            "language": language,
+            "difficulty": difficulty,
+            "retrieval_type": retrieval_type,
+            "chunk_size": int(chunk_size),
+            "chunk_overlap": int(chunk_overlap),
+            "preset": preset_name,
+            "docs_path": docs_path if source_mode == "Use local docs folder" else "",
+            "recursive_docs": bool(recursive_docs),
+            "output_prefix": output_prefix,
+            "from_outline": from_outline.strip() if from_outline else "",
+        }
+    )
 
     with st.status("Generating…", expanded=True) as status:
         status.write("Pipeline started…")
@@ -331,10 +405,42 @@ def main() -> None:
             return
         status.update(label="Done", state="complete")
 
+    if result.get("dry_run"):
+        plan = result["plan"]
+        st.success(f"Dry run in {result['elapsed_seconds']}s — no LLM calls.")
+        st.markdown(f"**{plan['document_count']}** file(s) · ~**{plan['estimated_llm_calls']}** LLM calls · model `{plan['model']}`")
+        if plan["documents"]:
+            st.code("\n".join(plan["documents"]))
+        st.markdown("**Planned steps**")
+        for step in plan["pipeline_steps"]:
+            st.markdown(f"- {step}")
+        return
+
     paths = result["paths"]
     quality = result.get("quality", {})
+
+    if result.get("outline_only"):
+        st.success(
+            f"Outline saved in {result['elapsed_seconds']}s · outline RAG: {result.get('outline_rag_used', False)}"
+        )
+        outline_path = paths.get("outline")
+        if outline_path and Path(outline_path).exists():
+            st.download_button(
+                "Course outline (JSON)",
+                data=Path(outline_path).read_bytes(),
+                file_name=Path(outline_path).name,
+                mime="application/json",
+            )
+        outline = result.get("outline", {})
+        if outline:
+            st.markdown("**Course title**")
+            st.write(outline.get("course_title", ""))
+            st.markdown("**Description**")
+            st.write(outline.get("course_description", ""))
+        return
+
     st.success(
-        f"Done in {result['elapsed_seconds']}s · outline RAG: {result['outline_rag_used']} · "
+        f"Done in {result['elapsed_seconds']}s · outline RAG: {result.get('outline_rag_used', False)} · "
         f"quality **{quality.get('overall_score', '—')}/100** (grade **{quality.get('grade', '—')}**)"
     )
 

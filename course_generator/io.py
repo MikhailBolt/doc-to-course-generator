@@ -50,6 +50,17 @@ def save_outline_json(output_dir: str, outline: Dict[str, Any], output_prefix: s
     return save_json(build_output_path(output_dir, "course_outline.json", output_prefix), outline)
 
 
+def load_outline_json(path: str) -> Dict[str, Any]:
+    from course_generator.generation import validate_outline
+
+    file_path = Path(path)
+    if not file_path.is_file():
+        raise FileNotFoundError(f"Outline file not found: {path}")
+    with open(file_path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    return validate_outline(data)
+
+
 def save_markdown_summary(output_dir: str, markdown_text: str, output_prefix: str = "") -> str:
     return save_text(build_output_path(output_dir, "course_summary.md", output_prefix), markdown_text)
 

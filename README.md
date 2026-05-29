@@ -87,6 +87,20 @@ python main.py \
   --skip-final-quiz
 ```
 
+Workflow helpers:
+
+```
+# List files and estimated LLM work (no Ollama, no index build)
+python main.py --dry-run
+
+# Save outline only (builds FAISS, 1–2 LLM calls)
+python main.py --outline-only
+python main.py --preset outline
+
+# Continue from a saved outline JSON
+python main.py --from-outline output/course_outline.json
+```
+
 ---
 
 ## ⚙️ Env config
@@ -149,4 +163,3 @@ Push/PR to `main`: workflow `.github/workflows/ci.yml` installs deps and runs `p
 
 - Multi-agent generation pipeline
 - Export to PDF
-- Persisted user presets in the UI

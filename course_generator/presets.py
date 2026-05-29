@@ -36,6 +36,7 @@ PRESETS: Dict[str, Dict[str, Any]] = {
         "disable_review_pass": True,
         "skip_outline_rag": False,
         "top_k": 4,
+        "outline_only": True,
     },
 }
 

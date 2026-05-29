@@ -104,6 +104,28 @@ def parse_args() -> argparse.Namespace:
         default=os.getenv("DOCS_RECURSIVE", "").lower() in {"1", "true", "yes"},
         help="Include supported files in docs subfolders (default: from DOCS_RECURSIVE env).",
     )
+    parser.add_argument(
+        "--quality-llm-review",
+        action="store_true",
+        help="Run an extra LLM pass for narrative quality feedback in the report.",
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="List source files and estimated LLM work without building the index or calling Ollama.",
+    )
+    parser.add_argument(
+        "--outline-only",
+        action="store_true",
+        help="Generate and save course_outline.json only (still builds FAISS index).",
+    )
+    parser.add_argument(
+        "--from-outline",
+        metavar="PATH",
+        default=None,
+        help="Resume from an existing course_outline.json (skips outline generation).",
+    )
+    return parser.parse_args()
 
 
 def _cli_progress(stage: str, detail: str) -> None:
@@ -159,6 +181,10 @@ def main() -> None:
         print("(X) Invalid lesson range. Check --min-lessons and --max-lessons.")
         sys.exit(1)
 
+    if getattr(args, "outline_only", False) and getattr(args, "from_outline", None):
+        print("(X) Use either --outline-only or --from-outline, not both.")
+        sys.exit(1)
+
     log_message(args.log_dir, "Starting course and quiz generation pipeline")
     try:
         print("--- Running generation pipeline... ---")
@@ -167,6 +193,29 @@ def main() -> None:
         print(f"(X) Generation failed: {exc}")
         log_message(args.log_dir, f"Generation error: {exc}")
         sys.exit(1)
+
+    if result.get("dry_run"):
+        plan = result["plan"]
+        print("\n[DRY RUN] No index build, no LLM calls.")
+        print(f"Documents ({plan['document_count']}):")
+        for name in plan["documents"]:
+            print(f"  - {name}")
+        print(f"Recursive scan: {plan['recursive_docs']}")
+        print(f"Estimated lessons: ~{plan['estimated_lessons']}")
+        print(f"Estimated LLM calls: ~{plan['estimated_llm_calls']}")
+        print(f"Model: {plan['model']}")
+        print("Pipeline steps:")
+        for step in plan["pipeline_steps"]:
+            print(f"  • {step}")
+        sys.exit(0)
+
+    if result.get("outline_only"):
+        paths = result["paths"]
+        print("\n[SUCCESS] Outline-only run complete.")
+        print(f"Course outline: {paths.get('outline', '')}")
+        print(f"Time: {result['elapsed_seconds']:.2f}s")
+        print(f"Outline RAG used: {result.get('outline_rag_used', False)}")
+        sys.exit(0)
 
     paths = result["paths"]
     n_docs = len(result.get("docs_info", []))
