@@ -103,7 +103,10 @@ def save_generation_report(
     quality_score: Dict[str, Any] | None = None,
 ) -> str:
     path = build_output_path(output_dir, "generation_report.json", args.output_prefix)
+    from course_generator import __version__
+
     report = {
+        "generator_version": __version__,
         "generated_at": datetime.now().isoformat(),
         "model": args.model,
         "embedding_model": args.embedding_model,

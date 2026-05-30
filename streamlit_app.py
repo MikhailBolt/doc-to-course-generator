@@ -6,6 +6,7 @@ from typing import Any, List, Optional
 
 import streamlit as st
 
+from course_generator import __version__
 from course_generator.cli import ensure_directories
 from course_generator.health import check_ollama, list_ollama_models
 from course_generator.presets import PRESET_NAMES, PRESETS
@@ -124,7 +125,10 @@ def main() -> None:
     st.set_page_config(page_title="Doc-to-Course Generator", layout="wide")
 
     st.title("Doc-to-Course Generator")
-    st.caption("Generate an HTML training course + quizzes from PDF/TXT/MD using local Ollama + FAISS RAG.")
+    st.caption(
+        f"v{__version__} — Generate an HTML training course + quizzes from PDF/TXT/MD "
+        "using local Ollama + FAISS RAG."
+    )
 
     saved = load_user_settings()
 

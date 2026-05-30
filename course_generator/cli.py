@@ -6,6 +6,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
+from course_generator import __version__
 from course_generator.constants import (
     DEFAULT_CHUNK_OVERLAP,
     DEFAULT_CHUNK_SIZE,
@@ -51,7 +52,12 @@ def ensure_directories(docs_path: str, db_path: str, manifest_file: str, output_
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Generate HTML course and quizzes from local documents using LLM + RAG"
+        description="Generate HTML course and quizzes from local documents using LLM + RAG",
+    )
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"doc-to-course-generator {__version__}",
     )
     parser.add_argument("--docs-path", default=os.getenv("DOCS_PATH", DEFAULT_DOCS_PATH))
     parser.add_argument("--db", default=os.getenv("DB_FAISS_PATH", DEFAULT_DB_FAISS_PATH))

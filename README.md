@@ -1,6 +1,12 @@
 # 📚 Doc-to-Course Generator
 
+**Version 1.0.0**
+
 Generate a structured **HTML training course** and **assessment quizzes** from documents using **local LLMs**, **RAG**, **FAISS**, and **Ollama**.
+
+```bash
+python main.py --version
+```
 
 ---
 
