@@ -1,6 +1,7 @@
 import argparse
 import os
 import sys
+import webbrowser
 from datetime import datetime
 from pathlib import Path
 
@@ -30,7 +31,7 @@ from course_generator.constants import (
     DEFAULT_TOP_K,
     SUPPORTED_EXTENSIONS,
 )
-from course_generator.health import check_ollama, list_ollama_models
+from course_generator.health import check_ollama, format_ollama_message, list_ollama_models
 from course_generator.pipeline import run_pipeline
 from course_generator.presets import PRESET_CLI_SLUGS, apply_cli_preset
 
@@ -104,6 +105,8 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--list-models", action="store_true", help="List Ollama models and exit.")
     parser.add_argument("--export-docx", action="store_true", help="Also export course_summary.docx.")
+    parser.add_argument("--export-pdf", action="store_true", help="Also export course_summary.pdf.")
+    parser.add_argument("--open", action="store_true", help="Open course.html in the default browser after a successful run.")
     parser.add_argument(
         "--recursive-docs",
         action=argparse.BooleanOptionalAction,
@@ -166,13 +169,10 @@ def main() -> None:
 
     if args.check_ollama:
         info = check_ollama(args.model)
-        if not info.get("ok"):
-            print(f"(X) Ollama not reachable at {info.get('host')}: {info.get('error', 'unknown error')}")
+        if not info.get("ok") or not info.get("model_available"):
+            print(f"(X) {format_ollama_message(info)}")
             sys.exit(1)
-        if not info.get("model_available"):
-            print(f"(X) Model '{args.model}' not found. Available (sample): {info.get('models_sample', [])}")
-            sys.exit(1)
-        print(f"[OK] Ollama reachable. Model '{args.model}' is available.")
+        print(f"[OK] {format_ollama_message(info)}")
         sys.exit(0)
 
     try:
@@ -203,9 +203,9 @@ def main() -> None:
     if result.get("dry_run"):
         plan = result["plan"]
         print("\n[DRY RUN] No index build, no LLM calls.")
-        print(f"Documents ({plan['document_count']}):")
-        for name in plan["documents"]:
-            print(f"  - {name}")
+        print(f"Documents ({plan['document_count']}, {plan.get('total_size_human', '?')} total):")
+        for item in plan.get("document_details", []):
+            print(f"  - {item['name']} ({item.get('size_human', '?')}, {item.get('type', '')})")
         print(f"Recursive scan: {plan['recursive_docs']}")
         print(f"Estimated lessons: ~{plan['estimated_lessons']}")
         print(f"Estimated LLM calls: ~{plan['estimated_llm_calls']}")
@@ -238,6 +238,8 @@ def main() -> None:
     print(f"Report:             {paths['report']}")
     if paths.get("docx"):
         print(f"Course DOCX:        {paths['docx']}")
+    if paths.get("pdf"):
+        print(f"Course PDF:         {paths['pdf']}")
     if paths.get("delivery_zip"):
         print(f"Delivery ZIP:       {paths['delivery_zip']}")
     print(f"Time:               {result['elapsed_seconds']:.2f}s")
@@ -249,6 +251,12 @@ def main() -> None:
         if quality.get("llm_review"):
             print("\nLLM quality review:")
             print(quality["llm_review"])
+
+    if getattr(args, "open", False) and paths.get("course_html"):
+        html_path = Path(paths["course_html"]).resolve()
+        if html_path.is_file():
+            webbrowser.open(html_path.as_uri())
+            print(f"Opened in browser: {html_path}")
 
     log_message(
         args.log_dir,

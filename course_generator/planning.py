@@ -4,6 +4,14 @@ from typing import Any, Dict, List
 from course_generator.documents import DocCollection, document_display_name
 
 
+def _human_size(num_bytes: int) -> str:
+    if num_bytes < 1024:
+        return f"{num_bytes} B"
+    if num_bytes < 1024 * 1024:
+        return f"{num_bytes / 1024:.1f} KB"
+    return f"{num_bytes / (1024 * 1024):.1f} MB"
+
+
 def estimate_llm_calls(args: Namespace, lesson_count: int) -> int:
     calls = 1  # outline
     if not args.disable_review_pass:
@@ -23,6 +31,16 @@ def estimate_llm_calls(args: Namespace, lesson_count: int) -> int:
 def build_run_plan(dc: DocCollection, args: Namespace) -> Dict[str, Any]:
     lesson_est = (int(args.min_lessons) + int(args.max_lessons)) // 2
     documents = [document_display_name(p, dc.root) for p in dc.files]
+    document_details = [
+        {
+            "name": document_display_name(p, dc.root),
+            "size_bytes": p.stat().st_size,
+            "size_human": _human_size(p.stat().st_size),
+            "type": p.suffix.lower().lstrip("."),
+        }
+        for p in dc.files
+    ]
+    total_bytes = sum(d["size_bytes"] for d in document_details)
 
     steps: List[str] = ["Build or load FAISS index"]
     if getattr(args, "from_outline", None):
@@ -45,11 +63,16 @@ def build_run_plan(dc: DocCollection, args: Namespace) -> Dict[str, Any]:
         steps.append("Build HTML and save artifacts")
         if getattr(args, "export_docx", False):
             steps.append("Export DOCX summary")
+        if getattr(args, "export_pdf", False):
+            steps.append("Export PDF summary")
         if not getattr(args, "no_delivery_zip", False):
             steps.append("Package delivery ZIP")
 
     return {
         "documents": documents,
+        "document_details": document_details,
+        "total_size_bytes": total_bytes,
+        "total_size_human": _human_size(total_bytes),
         "document_count": len(documents),
         "recursive_docs": bool(getattr(args, "recursive_docs", False)),
         "docs_root": str(dc.root),

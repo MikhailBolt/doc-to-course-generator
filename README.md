@@ -1,6 +1,6 @@
 # 📚 Doc-to-Course Generator
 
-**Version 1.0.0**
+**Version 1.2.0**
 
 Generate a structured **HTML training course** and **assessment quizzes** from documents using **local LLMs**, **RAG**, **FAISS**, and **Ollama**.
 
@@ -27,7 +27,9 @@ python main.py --version
 - **Delivery ZIP** (`course_delivery.zip`) with all artifacts
 - **Streamlit presets** (Quick draft / Full course / Outline only)
 - **Quality recommendations** after each run
-- **Optional DOCX export** and **LLM quality narrative**
+- **Optional DOCX / PDF export** and **LLM quality narrative**
+- **Ollama preflight** with actionable error messages
+- **Dry-run** shows file sizes; delivery ZIP includes `delivery_manifest.txt`
 - **CLI presets** (`--preset quick|full|outline`)
 - **Recursive docs** (`--recursive-docs` / `DOCS_RECURSIVE` / Streamlit “Scan subfolders”)
 - Relative source labels in RAG for nested files (fewer name collisions)
@@ -144,6 +146,8 @@ OUTLINE_RAG_MAX_CHARS=12000
 - `generation_report.json` (includes **quality** breakdown)
 - `course_delivery.zip` (all of the above in one archive)
 - `course_summary.docx` (optional, `--export-docx`)
+- `course_summary.pdf` (optional, `--export-pdf`)
+- `delivery_manifest.txt` (inside `course_delivery.zip`)
 
 ---
 
@@ -168,4 +172,3 @@ Push/PR to `main`: workflow `.github/workflows/ci.yml` installs deps and runs `p
 ## 🛣 Future improvements
 
 - Multi-agent generation pipeline
-- Export to PDF

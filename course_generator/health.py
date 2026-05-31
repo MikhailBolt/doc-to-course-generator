@@ -38,6 +38,7 @@ def check_ollama(model: str, timeout: float = 5.0) -> Dict[str, Any]:
             "model": model,
             "model_available": available,
             "models_sample": models[:15],
+            "models_count": len(models),
         }
     except urllib.error.URLError as exc:
         return {
@@ -55,3 +56,30 @@ def check_ollama(model: str, timeout: float = 5.0) -> Dict[str, Any]:
             "model_available": False,
             "error": str(exc),
         }
+
+
+def format_ollama_message(info: Dict[str, Any]) -> str:
+    """Human-readable Ollama status for CLI, Streamlit, and pipeline errors."""
+    host = info.get("host", ollama_base_url())
+    model = info.get("model", "")
+
+    if not info.get("ok"):
+        err = info.get("error", "connection failed")
+        return (
+            f"Ollama is not reachable at {host}.\n"
+            f"  • Start the Ollama app or run: ollama serve\n"
+            f"  • Check OLLAMA_HOST in .env if Ollama runs on another machine\n"
+            f"  • Detail: {err}"
+        )
+
+    if not info.get("model_available"):
+        sample = info.get("models_sample") or []
+        sample_txt = ", ".join(sample[:5]) if sample else "(none listed)"
+        return (
+            f"Model '{model}' is not installed in Ollama.\n"
+            f"  • Run: ollama pull {model}\n"
+            f"  • Or pick another model (--model / UI dropdown)\n"
+            f"  • Installed models ({info.get('models_count', len(sample))}): {sample_txt}"
+        )
+
+    return f"Ollama OK at {host} — model '{model}' is available."

@@ -72,6 +72,13 @@ def save_course_docx(output_dir: str, markdown_text: str, output_prefix: str = "
     return export_markdown_to_docx(markdown_text, path)
 
 
+def save_course_pdf(output_dir: str, markdown_text: str, output_prefix: str = "") -> str:
+    from course_generator.pdf_export import export_markdown_to_pdf
+
+    path = build_output_path(output_dir, "course_summary.pdf", output_prefix)
+    return export_markdown_to_pdf(markdown_text, path)
+
+
 def save_lesson_summaries(output_dir: str, lesson_payloads: List[Dict[str, Any]], outline: Dict[str, Any], output_prefix: str = "") -> str:
     path = build_output_path(output_dir, "lesson_summaries.json", output_prefix)
     lessons = outline.get("lessons", [])

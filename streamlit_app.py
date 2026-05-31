@@ -8,7 +8,7 @@ import streamlit as st
 
 from course_generator import __version__
 from course_generator.cli import ensure_directories
-from course_generator.health import check_ollama, list_ollama_models
+from course_generator.health import check_ollama, format_ollama_message, list_ollama_models
 from course_generator.presets import PRESET_NAMES, PRESETS
 from course_generator.constants import (
     DEFAULT_CHUNK_OVERLAP,
@@ -76,6 +76,7 @@ def _make_args(
     outline_rag_max_chars: int,
     max_preview_chars_per_file: int,
     export_docx: bool,
+    export_pdf: bool,
     quality_llm_review: bool,
     recursive_docs: bool,
     dry_run: bool,
@@ -111,6 +112,7 @@ def _make_args(
         outline_rag_max_chunks=outline_rag_max_chunks,
         outline_rag_max_chars=outline_rag_max_chars,
         export_docx=export_docx,
+        export_pdf=export_pdf,
         quality_llm_review=quality_llm_review,
         no_delivery_zip=False,
         preset=None,
@@ -154,12 +156,10 @@ def main() -> None:
 
         if st.button("Check Ollama", use_container_width=True):
             info = check_ollama(model)
-            if not info.get("ok"):
-                st.error(f"Ollama unreachable: {info.get('error', 'unknown')}")
-            elif not info.get("model_available"):
-                st.warning(f"Model `{model}` not found. Try: {', '.join(info.get('models_sample', [])[:5])}")
+            if not info.get("ok") or not info.get("model_available"):
+                st.error(format_ollama_message(info))
             else:
-                st.success(f"Ollama OK — `{model}` is available.")
+                st.success(format_ollama_message(info))
 
         st.header("Inputs")
         source_mode = st.radio("Source", ["Upload files", "Use local docs folder"], index=0)
@@ -277,6 +277,7 @@ def main() -> None:
         )
         rebuild = st.checkbox("Force rebuild FAISS index", value=False)
         export_docx = st.checkbox("Export DOCX summary", value=False)
+        export_pdf = st.checkbox("Export PDF summary", value=False)
         quality_llm_review = st.checkbox("LLM quality review (extra LLM call)", value=False)
 
         st.header("Outline grounding (RAG)")
@@ -321,11 +322,8 @@ def main() -> None:
 
     if not dry_run:
         ollama_info = check_ollama(model)
-        if not ollama_info.get("ok"):
-            st.error(f"Start Ollama first (could not reach {ollama_info.get('host')}): {ollama_info.get('error', '')}")
-            return
-        if not ollama_info.get("model_available"):
-            st.error(f"Model `{model}` is not available in Ollama. Run `ollama pull {model}` or pick another model.")
+        if not ollama_info.get("ok") or not ollama_info.get("model_available"):
+            st.error(format_ollama_message(ollama_info))
             return
 
     if source_mode == "Upload files":
@@ -368,6 +366,7 @@ def main() -> None:
         outline_rag_max_chars=int(outline_rag_max_chars),
         max_preview_chars_per_file=int(max_preview_chars_per_file),
         export_docx=bool(export_docx),
+        export_pdf=bool(export_pdf),
         quality_llm_review=bool(quality_llm_review),
         recursive_docs=bool(recursive_docs),
         dry_run=bool(dry_run),
@@ -412,8 +411,18 @@ def main() -> None:
     if result.get("dry_run"):
         plan = result["plan"]
         st.success(f"Dry run in {result['elapsed_seconds']}s — no LLM calls.")
-        st.markdown(f"**{plan['document_count']}** file(s) · ~**{plan['estimated_llm_calls']}** LLM calls · model `{plan['model']}`")
-        if plan["documents"]:
+        st.markdown(
+            f"**{plan['document_count']}** file(s) · **{plan.get('total_size_human', '?')}** · "
+            f"~**{plan['estimated_llm_calls']}** LLM calls · model `{plan['model']}`"
+        )
+        details = plan.get("document_details") or []
+        if details:
+            st.dataframe(
+                [{"file": d["name"], "size": d["size_human"], "type": d["type"]} for d in details],
+                use_container_width=True,
+                hide_index=True,
+            )
+        elif plan["documents"]:
             st.code("\n".join(plan["documents"]))
         st.markdown("**Planned steps**")
         for step in plan["pipeline_steps"]:
@@ -493,6 +502,15 @@ def main() -> None:
                 data=Path(docx_p).read_bytes(),
                 file_name=Path(docx_p).name,
                 mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            )
+
+        pdf_p = paths.get("pdf")
+        if pdf_p and Path(pdf_p).exists():
+            st.download_button(
+                "Course summary (PDF)",
+                data=Path(pdf_p).read_bytes(),
+                file_name=Path(pdf_p).name,
+                mime="application/pdf",
             )
 
         zip_p = paths.get("delivery_zip")

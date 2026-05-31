@@ -14,10 +14,12 @@ from course_generator.generation import (
     review_quiz,
 )
 from course_generator.html_export import build_course_html, build_markdown_summary
+from course_generator.preflight import require_ollama
 from course_generator.io import (
     load_outline_json,
     save_course_bundle,
     save_course_docx,
+    save_course_pdf,
     save_course_html,
     save_course_metadata,
     save_generation_report,
@@ -142,6 +144,9 @@ def run_pipeline(args: Namespace, progress: Optional[ProgressCallback] = None) -
             "elapsed_seconds": round(elapsed, 2),
         }
 
+    _notify(progress, "preflight", f"Checking Ollama model: {args.model}")
+    require_ollama(args.model)
+
     _notify(progress, "vectorstore", f"Building or loading FAISS index ({len(source_files)} file(s))")
     vectorstore, docs_info = load_or_create_vectorstore(args, source_files, labels_base=labels_base)
 
@@ -230,6 +235,10 @@ def run_pipeline(args: Namespace, progress: Optional[ProgressCallback] = None) -
     if getattr(args, "export_docx", False):
         _notify(progress, "docx", "Exporting DOCX summary")
         docx_path = save_course_docx(args.output_dir, markdown_summary, args.output_prefix)
+    pdf_path = ""
+    if getattr(args, "export_pdf", False):
+        _notify(progress, "pdf", "Exporting PDF summary")
+        pdf_path = save_course_pdf(args.output_dir, markdown_summary, args.output_prefix)
     bundle_path = save_course_bundle(args.output_dir, outline, docs_info, lesson_payloads, pretest_data, quiz_data, args)
 
     elapsed = time.time() - started
@@ -258,6 +267,8 @@ def run_pipeline(args: Namespace, progress: Optional[ProgressCallback] = None) -
     }
     if docx_path:
         paths["docx"] = docx_path
+    if pdf_path:
+        paths["pdf"] = pdf_path
 
     zip_path = ""
     if not getattr(args, "no_delivery_zip", False):
