@@ -1,6 +1,6 @@
 # 📚 Doc-to-Course Generator
 
-**Version 1.2.0**
+**Version 1.3.0**
 
 Generate a structured **HTML training course** and **assessment quizzes** from documents using **local LLMs**, **RAG**, **FAISS**, and **Ollama**.
 
@@ -14,7 +14,7 @@ python main.py --version
 
 - Generate full **HTML course**
 - Generate **pre-test** and **final quiz**
-- Supports **PDF / TXT / MD**
+- Supports **PDF / TXT / MD / DOCX**
 - Local **RAG pipeline**
 - FAISS vector search
 - Ollama (local LLM)
@@ -30,6 +30,8 @@ python main.py --version
 - **Optional DOCX / PDF export** and **LLM quality narrative**
 - **Ollama preflight** with actionable error messages
 - **Dry-run** shows file sizes; delivery ZIP includes `delivery_manifest.txt`
+- **Checkpoints** to resume interrupted runs (`--checkpoint`, `--resume-checkpoint`)
+- **`--list-runs`** — view recent generation reports from CLI
 - **CLI presets** (`--preset quick|full|outline`)
 - **Recursive docs** (`--recursive-docs` / `DOCS_RECURSIVE` / Streamlit “Scan subfolders”)
 - Relative source labels in RAG for nested files (fewer name collisions)
@@ -107,6 +109,13 @@ python main.py --preset outline
 
 # Continue from a saved outline JSON
 python main.py --from-outline output/course_outline.json
+
+# Save progress and resume after interruption
+python main.py --checkpoint
+python main.py --resume-checkpoint output/.checkpoints/default/checkpoint.json
+
+# Recent runs
+python main.py --list-runs
 ```
 
 ---

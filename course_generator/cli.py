@@ -31,7 +31,9 @@ from course_generator.constants import (
     DEFAULT_TOP_K,
     SUPPORTED_EXTENSIONS,
 )
+from course_generator.errors import DocumentSourceError
 from course_generator.health import check_ollama, format_ollama_message, list_ollama_models
+from course_generator.history import list_recent_reports
 from course_generator.pipeline import run_pipeline
 from course_generator.presets import PRESET_CLI_SLUGS, apply_cli_preset
 
@@ -134,6 +136,24 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Resume from an existing course_outline.json (skips outline generation).",
     )
+    parser.add_argument(
+        "--checkpoint",
+        action="store_true",
+        help="Save progress to output/.checkpoints/ after outline and each lesson.",
+    )
+    parser.add_argument(
+        "--resume-checkpoint",
+        metavar="PATH",
+        default=None,
+        help="Resume lesson generation from a checkpoint.json file.",
+    )
+    parser.add_argument(
+        "--ollama-timeout",
+        type=float,
+        default=float(os.getenv("OLLAMA_TIMEOUT", "120")),
+        help="Timeout in seconds for each Ollama request (default: OLLAMA_TIMEOUT env or 120).",
+    )
+    parser.add_argument("--list-runs", action="store_true", help="List recent generation reports and exit.")
     return parser.parse_args()
 
 
@@ -152,6 +172,22 @@ def log_message(log_dir: str, message: str) -> None:
 
 def main() -> None:
     args = parse_args()
+
+    if args.list_runs:
+        runs = list_recent_reports(args.output_dir, limit=12)
+        if not runs:
+            print(f"No generation reports found in '{args.output_dir}'.")
+            sys.exit(0)
+        print(f"Recent runs in {args.output_dir}:")
+        for row in runs:
+            quality = row.get("quality_score")
+            q_txt = f"{quality}/100 ({row.get('grade', '-')})" if quality is not None else "n/a"
+            print(
+                f"  {row.get('generated_at', '?')} | {row.get('model', '?')} | "
+                f"{row.get('lessons_count', 0)} lessons | quality {q_txt} | {row.get('elapsed_seconds', '?')}s"
+            )
+            print(f"    {row.get('path', '')}")
+        sys.exit(0)
 
     if args.list_models:
         try:
@@ -190,11 +226,20 @@ def main() -> None:
     if getattr(args, "outline_only", False) and getattr(args, "from_outline", None):
         print("(X) Use either --outline-only or --from-outline, not both.")
         sys.exit(1)
+    if getattr(args, "resume_checkpoint", None) and getattr(args, "from_outline", None):
+        print("(X) Use either --resume-checkpoint or --from-outline, not both.")
+        sys.exit(1)
+    if getattr(args, "resume_checkpoint", None) and getattr(args, "outline_only", False):
+        print("(X) Use either --resume-checkpoint or --outline-only, not both.")
+        sys.exit(1)
 
     log_message(args.log_dir, "Starting course and quiz generation pipeline")
     try:
         print("--- Running generation pipeline... ---")
         result = run_pipeline(args, progress=_cli_progress)
+    except DocumentSourceError as exc:
+        print(f"(X) {exc}")
+        sys.exit(1)
     except Exception as exc:
         print(f"(X) Generation failed: {exc}")
         log_message(args.log_dir, f"Generation error: {exc}")
@@ -242,6 +287,8 @@ def main() -> None:
         print(f"Course PDF:         {paths['pdf']}")
     if paths.get("delivery_zip"):
         print(f"Delivery ZIP:       {paths['delivery_zip']}")
+    if result.get("checkpoint"):
+        print(f"Checkpoint:         {result['checkpoint']}")
     print(f"Time:               {result['elapsed_seconds']:.2f}s")
     quality = result.get("quality", {})
     if quality:

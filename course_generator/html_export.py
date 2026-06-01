@@ -262,6 +262,7 @@ def build_course_html(
     .sidebar li {{ margin-bottom:10px; }}
     .sidebar a {{ color:#bfdbfe; text-decoration:none; }}
     .sidebar a:hover {{ text-decoration:underline; }}
+    .sidebar a.active {{ color:#fff; font-weight:700; text-decoration:none; }}
     .content {{ padding:28px; max-width:1100px; width:100%; margin:0 auto; }}
     .card {{ background:var(--panel); border-radius:var(--radius); padding:24px; box-shadow:var(--shadow); margin-bottom:20px; }}
     .hero {{ padding:28px; }}
@@ -296,6 +297,13 @@ def build_course_html(
     .progress-bar {{ height:100%; width:0%; background:linear-gradient(90deg, #2563eb, #38bdf8); transition:width 0.3s ease; }}
     .footer {{ margin-top:28px; color:var(--muted); font-size:0.95rem; text-align:center; }}
     @media (max-width:980px) {{ .layout {{ grid-template-columns:1fr; }} .sidebar {{ position:relative; height:auto; }} .content {{ padding:18px; }} }}
+    @media print {{
+      body {{ background:#fff; }}
+      .sidebar {{ display:none; }}
+      .layout {{ display:block; }}
+      .card, .lesson-section {{ box-shadow:none; border:1px solid #ddd; break-inside:avoid; }}
+      button, .quiz-actions {{ display:none; }}
+    }}
   </style>
 </head>
 <body>
@@ -338,6 +346,20 @@ def build_course_html(
     function resetQuiz(prefix) {{ const cards = getQuizCards(prefix); cards.forEach(card => {{ card.querySelectorAll('input[type="radio"]').forEach(input => input.checked = false); card.querySelectorAll('.quiz-option').forEach(opt => opt.classList.remove('correct','incorrect')); }}); const results = document.getElementById(`${{prefix}}-results`); if (results) {{ results.style.display = 'none'; results.innerHTML = ''; }} updateProgress(prefix); }}
     document.addEventListener('change', (event) => {{ const target = event.target; if (target.matches('input[type="radio"]')) {{ const name = target.name || ''; if (name.startsWith('pretest-')) updateProgress('pretest'); if (name.startsWith('final-')) updateProgress('final'); }} }});
     updateProgress('pretest'); updateProgress('final');
+    (function initScrollSpy() {{
+      const navLinks = Array.from(document.querySelectorAll('.sidebar a[href^="#"]'));
+      const sections = navLinks.map(link => document.querySelector(link.getAttribute('href'))).filter(Boolean);
+      if (!sections.length) return;
+      const onScroll = () => {{
+        let current = sections[0];
+        for (const section of sections) {{
+          if (section.getBoundingClientRect().top <= 120) current = section;
+        }}
+        navLinks.forEach(link => link.classList.toggle('active', link.getAttribute('href') === '#' + current.id));
+      }};
+      window.addEventListener('scroll', onScroll, {{ passive: true }});
+      onScroll();
+    }})();
   </script>
 </body>
 </html>

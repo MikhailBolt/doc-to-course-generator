@@ -1,14 +1,7 @@
 import pytest
 
 from course_generator.documents import collect_source_files, document_display_name
-
-
-@pytest.fixture(autouse=True)
-def _no_sys_exit(monkeypatch):
-    def _boom(code: int | None = 1) -> None:
-        pytest.fail(f"unexpected sys.exit({code})")
-
-    monkeypatch.setattr("course_generator.documents.sys.exit", _boom)
+from course_generator.errors import DocumentSourceError
 
 
 def test_collect_recursive_includes_nested(tmp_path):
@@ -25,6 +18,11 @@ def test_collect_recursive_includes_nested(tmp_path):
     assert len(rec.files) == 2
     names = sorted(f.name for f in rec.files)
     assert names == ["leaf.md", "root.txt"]
+
+
+def test_collect_missing_path_raises(tmp_path):
+    with pytest.raises(DocumentSourceError, match="does not exist"):
+        collect_source_files(str(tmp_path / "missing"), recursive=False)
 
 
 def test_document_display_name_under_root(tmp_path):

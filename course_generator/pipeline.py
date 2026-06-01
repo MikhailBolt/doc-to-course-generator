@@ -1,8 +1,11 @@
+import os
 import time
 from argparse import Namespace
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from langchain_ollama import OllamaLLM
+
+from course_generator.checkpoints import checkpoint_path_for_args, load_checkpoint, save_checkpoint
 
 from course_generator.documents import DocCollection, collect_source_files, get_combined_preview_text
 from course_generator.generation import (
@@ -41,6 +44,31 @@ ProgressCallback = Callable[[str, str], None]
 def _notify(progress: Optional[ProgressCallback], stage: str, detail: str = "") -> None:
     if progress:
         progress(stage, detail)
+
+
+def _build_llm(args: Namespace) -> OllamaLLM:
+    timeout = float(getattr(args, "ollama_timeout", None) or os.getenv("OLLAMA_TIMEOUT", "120"))
+    return OllamaLLM(model=args.model, timeout=timeout)
+
+
+def _save_checkpoint_if_enabled(
+    args: Namespace,
+    outline: Dict[str, Any],
+    lesson_payloads: List[Dict[str, Any]],
+    outline_rag_used: bool,
+    stage: str,
+) -> str:
+    if not getattr(args, "checkpoint", False):
+        return ""
+    path = checkpoint_path_for_args(args)
+    return save_checkpoint(
+        path,
+        outline=outline,
+        lesson_payloads=lesson_payloads,
+        outline_rag_used=outline_rag_used,
+        stage=stage,
+        args=args,
+    )
 
 
 def _generate_outline(
@@ -92,11 +120,18 @@ def _generate_lessons(
     vectorstore: Any,
     outline: Dict[str, Any],
     progress: Optional[ProgressCallback],
+    *,
+    initial_payloads: Optional[List[Dict[str, Any]]] = None,
+    outline_rag_used: bool = False,
 ) -> List[Dict[str, Any]]:
-    lesson_payloads: List[Dict[str, Any]] = []
+    lesson_payloads: List[Dict[str, Any]] = list(initial_payloads or [])
     lessons = outline.get("lessons", [])
     lesson_total = len(lessons)
-    for idx, lesson in enumerate(lessons, start=1):
+    start = len(lesson_payloads)
+    if start >= lesson_total:
+        return lesson_payloads
+
+    for idx, lesson in enumerate(lessons[start:], start=start + 1):
         lesson_title = str(lesson.get("title", f"Lesson {idx}")).strip()
         lesson_goal = str(lesson.get("goal", "")).strip()
         key_points = lesson.get("key_points", []) if isinstance(lesson.get("key_points", []), list) else []
@@ -113,6 +148,7 @@ def _generate_lessons(
                 args.include_source_excerpts,
             )
         )
+        _save_checkpoint_if_enabled(args, outline, lesson_payloads, outline_rag_used, "lessons")
     return lesson_payloads
 
 
@@ -124,6 +160,8 @@ def run_pipeline(args: Namespace, progress: Optional[ProgressCallback] = None) -
     - dry_run: list documents and estimated work, no LLM/index build.
     - outline_only: stop after saving course_outline.json.
     - from_outline: load outline JSON path instead of generating one.
+    - checkpoint: save progress after outline and each lesson.
+    - resume_checkpoint: continue lessons from a checkpoint file.
     """
     started = time.time()
 
@@ -151,15 +189,27 @@ def run_pipeline(args: Namespace, progress: Optional[ProgressCallback] = None) -
     vectorstore, docs_info = load_or_create_vectorstore(args, source_files, labels_base=labels_base)
 
     from_outline_path = getattr(args, "from_outline", None) or None
+    resume_path = getattr(args, "resume_checkpoint", None) or None
     outline_rag_used = False
+    initial_lessons: List[Dict[str, Any]] = []
+    llm: Optional[OllamaLLM] = None
+    checkpoint_path = ""
 
-    if from_outline_path:
+    if resume_path:
+        _notify(progress, "checkpoint", f"Resuming from {resume_path}")
+        cp = load_checkpoint(resume_path)
+        outline = cp["outline"]
+        initial_lessons = cp.get("lesson_payloads", [])
+        outline_rag_used = bool(cp.get("outline_rag_used", False))
+        _notify(progress, "checkpoint", f"{len(initial_lessons)}/{len(outline.get('lessons', []))} lessons already done")
+    elif from_outline_path:
         _notify(progress, "outline", f"Loading outline from {from_outline_path}")
         outline = load_outline_json(from_outline_path)
     else:
         _notify(progress, "llm", f"Connecting to Ollama model: {args.model}")
-        llm = OllamaLLM(model=args.model)
+        llm = _build_llm(args)
         outline, outline_rag_used = _generate_outline(args, llm, vectorstore, source_files, labels_base, progress)
+        checkpoint_path = _save_checkpoint_if_enabled(args, outline, [], outline_rag_used, "outline")
 
         if getattr(args, "outline_only", False):
             _notify(progress, "export", "Saving outline only")
@@ -179,13 +229,23 @@ def run_pipeline(args: Namespace, progress: Optional[ProgressCallback] = None) -
                 "paths": {"outline": outline_path},
                 "elapsed_seconds": round(elapsed, 2),
                 "outline_rag_used": outline_rag_used,
+                "checkpoint": checkpoint_path,
             }
 
-    if from_outline_path:
+    if llm is None:
         _notify(progress, "llm", f"Connecting to Ollama model: {args.model}")
-        llm = OllamaLLM(model=args.model)
+        llm = _build_llm(args)
 
-    lesson_payloads = _generate_lessons(args, llm, vectorstore, outline, progress)
+    lesson_payloads = _generate_lessons(
+        args,
+        llm,
+        vectorstore,
+        outline,
+        progress,
+        initial_payloads=initial_lessons,
+        outline_rag_used=outline_rag_used,
+    )
+    checkpoint_path = _save_checkpoint_if_enabled(args, outline, lesson_payloads, outline_rag_used, "lessons") or checkpoint_path
 
     pretest_data: List[Dict[str, Any]] = []
     if not args.skip_pretest:
@@ -276,9 +336,10 @@ def run_pipeline(args: Namespace, progress: Optional[ProgressCallback] = None) -
         zip_path = create_delivery_zip(paths, args.output_dir, args.output_prefix)
         paths["delivery_zip"] = zip_path
 
+    checkpoint_path = _save_checkpoint_if_enabled(args, outline, lesson_payloads, outline_rag_used, "complete") or checkpoint_path
     _notify(progress, "done", f"Finished in {elapsed:.1f}s — quality {quality['overall_score']}/100")
 
-    return {
+    result: Dict[str, Any] = {
         "docs_info": docs_info,
         "outline": outline,
         "lesson_payloads": lesson_payloads,
@@ -291,3 +352,6 @@ def run_pipeline(args: Namespace, progress: Optional[ProgressCallback] = None) -
         "elapsed_seconds": round(elapsed, 2),
         "outline_rag_used": outline_rag_used,
     }
+    if checkpoint_path:
+        result["checkpoint"] = checkpoint_path
+    return result

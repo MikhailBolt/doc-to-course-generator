@@ -82,6 +82,9 @@ def _make_args(
     dry_run: bool,
     outline_only: bool,
     from_outline: Optional[str],
+    checkpoint: bool,
+    resume_checkpoint: Optional[str],
+    ollama_timeout: float,
 ) -> Namespace:
     return Namespace(
         docs_path=docs_path,
@@ -120,6 +123,9 @@ def _make_args(
         dry_run=dry_run,
         outline_only=outline_only,
         from_outline=from_outline or None,
+        checkpoint=checkpoint,
+        resume_checkpoint=resume_checkpoint or None,
+        ollama_timeout=ollama_timeout,
     )
 
 
@@ -301,6 +307,19 @@ def main() -> None:
             value=saved.get("from_outline", ""),
             placeholder="output/course_outline.json",
         )
+        checkpoint = st.checkbox("Save checkpoints (resume if interrupted)", value=False)
+        resume_checkpoint = st.text_input(
+            "Resume from checkpoint JSON (optional)",
+            value=saved.get("resume_checkpoint", ""),
+            placeholder="output/.checkpoints/default/checkpoint.json",
+        )
+        ollama_timeout = st.number_input(
+            "Ollama timeout (seconds)",
+            min_value=30,
+            max_value=900,
+            value=int(saved.get("ollama_timeout", 120)),
+            step=30,
+        )
 
         run_btn = st.button("Generate", type="primary", use_container_width=True)
 
@@ -318,6 +337,9 @@ def main() -> None:
 
     if outline_only and from_outline and from_outline.strip():
         st.error("Choose either **Outline only** or **Resume from outline**, not both.")
+        return
+    if resume_checkpoint and resume_checkpoint.strip() and from_outline and from_outline.strip():
+        st.error("Choose either **Resume from checkpoint** or **Resume from outline**, not both.")
         return
 
     if not dry_run:
@@ -372,6 +394,9 @@ def main() -> None:
         dry_run=bool(dry_run),
         outline_only=bool(outline_only),
         from_outline=from_outline.strip() if from_outline and from_outline.strip() else None,
+        checkpoint=bool(checkpoint),
+        resume_checkpoint=resume_checkpoint.strip() if resume_checkpoint and resume_checkpoint.strip() else None,
+        ollama_timeout=float(ollama_timeout),
     )
 
     ensure_directories(args.docs_path, args.db, args.manifest_file, args.output_dir, args.log_dir)
@@ -390,8 +415,12 @@ def main() -> None:
             "recursive_docs": bool(recursive_docs),
             "output_prefix": output_prefix,
             "from_outline": from_outline.strip() if from_outline else "",
+            "resume_checkpoint": resume_checkpoint.strip() if resume_checkpoint else "",
+            "ollama_timeout": int(ollama_timeout),
         }
     )
+
+    lesson_progress = st.progress(0.0, text="Waiting to start…")
 
     with st.status("Generating…", expanded=True) as status:
         status.write("Pipeline started…")
@@ -399,6 +428,15 @@ def main() -> None:
         def on_progress(stage: str, detail: str) -> None:
             line = f"**{stage}** — {detail}" if detail else f"**{stage}**"
             status.write(line)
+            if stage == "lesson" and "/" in detail:
+                try:
+                    left, rest = detail.split("/", 1)
+                    current = int(left.strip())
+                    total = int(rest.split(":", 1)[0].strip())
+                    if total > 0:
+                        lesson_progress.progress(min(1.0, current / total), text=f"Lesson {current}/{total}")
+                except ValueError:
+                    pass
 
         try:
             result = run_pipeline(args, progress=on_progress)
@@ -407,6 +445,7 @@ def main() -> None:
             st.exception(exc)
             return
         status.update(label="Done", state="complete")
+        lesson_progress.progress(1.0, text="Complete")
 
     if result.get("dry_run"):
         plan = result["plan"]
@@ -452,10 +491,13 @@ def main() -> None:
             st.write(outline.get("course_description", ""))
         return
 
-    st.success(
+    success_msg = (
         f"Done in {result['elapsed_seconds']}s · outline RAG: {result.get('outline_rag_used', False)} · "
         f"quality **{quality.get('overall_score', '—')}/100** (grade **{quality.get('grade', '—')}**)"
     )
+    if result.get("checkpoint"):
+        success_msg += f" · checkpoint `{result['checkpoint']}`"
+    st.success(success_msg)
 
     if quality.get("checks"):
         with st.expander("Quality breakdown", expanded=True):

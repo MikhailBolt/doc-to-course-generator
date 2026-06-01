@@ -20,6 +20,7 @@ def list_recent_reports(output_dir: str, limit: int = 8) -> List[Dict[str, Any]]
             reports.append({
                 "path": str(path),
                 "generated_at": data.get("generated_at", ""),
+                "generator_version": data.get("generator_version", ""),
                 "model": data.get("model", ""),
                 "lessons_count": data.get("lessons_count", 0),
                 "quality_score": (data.get("quality") or {}).get("overall_score"),

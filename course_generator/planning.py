@@ -52,6 +52,11 @@ def build_run_plan(dc: DocCollection, args: Namespace) -> Dict[str, Any]:
         if not args.disable_review_pass:
             steps.append("Review outline")
 
+    if getattr(args, "checkpoint", False):
+        steps.append("Save checkpoints after outline and each lesson")
+    if getattr(args, "resume_checkpoint", None):
+        steps.insert(1, f"Resume from checkpoint {args.resume_checkpoint}")
+
     if not getattr(args, "outline_only", False):
         steps.append(f"Generate ~{lesson_est} lesson sections (RAG per lesson)")
         if not args.skip_pretest:

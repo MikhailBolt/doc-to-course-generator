@@ -1,10 +1,10 @@
 import hashlib
 import json
-import sys
 from pathlib import Path
 from typing import Any, Dict, List, NamedTuple, Optional
 
 from course_generator.constants import SUPPORTED_EXTENSIONS
+from course_generator.errors import DocumentSourceError
 from course_generator.utils import clean_text
 
 
@@ -26,13 +26,11 @@ def collect_source_files(docs_path: str, *, recursive: bool = False) -> DocColle
     path = Path(docs_path)
 
     if not path.exists():
-        print(f"(X) Error: '{docs_path}' does not exist.")
-        sys.exit(1)
+        raise DocumentSourceError(f"'{docs_path}' does not exist.")
 
     if path.is_file():
         if path.suffix.lower() not in SUPPORTED_EXTENSIONS:
-            print(f"(X) Error: '{docs_path}' is not a supported file type.")
-            sys.exit(1)
+            raise DocumentSourceError(f"'{docs_path}' is not a supported file type ({', '.join(sorted(SUPPORTED_EXTENSIONS))}).")
         return DocCollection(files=[path], root=path.parent.resolve())
 
     root = path.resolve()
@@ -49,8 +47,7 @@ def collect_source_files(docs_path: str, *, recursive: bool = False) -> DocColle
     source_files = matching_files()
     if not source_files:
         hint = " (try --recursive-docs for subfolders)" if not recursive else ""
-        print(f"(X) Error: No supported files found in '{docs_path}'.{hint}")
-        sys.exit(1)
+        raise DocumentSourceError(f"No supported files found in '{docs_path}'.{hint}")
 
     return DocCollection(files=source_files, root=root)
 
@@ -115,6 +112,20 @@ def load_file_documents(file_path: Path, *, labels_base: Optional[Path] = None) 
 
         loader = TextLoader(str(file_path), encoding="utf-8")
         docs = loader.load()
+    elif suffix == ".docx":
+        from langchain_core.documents import Document
+
+        try:
+            from docx import Document as DocxDocument
+        except ImportError as exc:
+            raise ImportError("python-docx is required for .docx input. Run: pip install python-docx") from exc
+
+        docx = DocxDocument(str(file_path))
+        paragraphs = [p.text.strip() for p in docx.paragraphs if p.text and p.text.strip()]
+        text = "\n\n".join(paragraphs)
+        if not text.strip():
+            raise ValueError(f"DOCX file appears empty: {file_path.name}")
+        docs = [Document(page_content=text, metadata={"source": str(file_path.resolve())})]
     else:
         raise ValueError(f"Unsupported file type: {suffix}")
 

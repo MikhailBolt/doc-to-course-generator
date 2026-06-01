@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.3.0] — 2026-05-29
+
+### Added
+- **Checkpoints** (`--checkpoint`, `--resume-checkpoint`) to save/resume long lesson runs
+- **`.docx` input** documents (python-docx)
+- **`--list-runs`** — recent `generation_report.json` summary in CLI
+- **`--ollama-timeout`** / `OLLAMA_TIMEOUT` for LLM requests
+- Course HTML: print stylesheet and sidebar scroll-spy
+- Streamlit: lesson progress bar, checkpoint options
+
+### Changed
+- `collect_source_files` raises `DocumentSourceError` instead of `sys.exit` (better for UI/tests)
+
 ## [1.2.0] — 2026-05-29
 
 ### Added
