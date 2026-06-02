@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.4.0] — 2026-05-29
+
+### Added
+- `flashcards.json` study deck from glossary and lesson key points
+- `quizzes.csv` export (UTF-8 BOM) for pre-test and final quiz
+- `--validate-outline` CLI check
+- `--max-files` limit for large document folders
+- Lesson `generation_mode` tracking (`llm` vs `fallback`) in reports
+- HTML: generator version in footer and back-to-top link
+
+### Changed
+- `DocCollection` reports truncation when `max_files` applies
+
 ## [1.3.0] — 2026-05-29
 
 ### Added

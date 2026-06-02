@@ -85,6 +85,9 @@ def _make_args(
     checkpoint: bool,
     resume_checkpoint: Optional[str],
     ollama_timeout: float,
+    export_quiz_csv: bool,
+    export_flashcards: bool,
+    max_files: int,
 ) -> Namespace:
     return Namespace(
         docs_path=docs_path,
@@ -126,6 +129,9 @@ def _make_args(
         checkpoint=checkpoint,
         resume_checkpoint=resume_checkpoint or None,
         ollama_timeout=ollama_timeout,
+        export_quiz_csv=export_quiz_csv,
+        export_flashcards=export_flashcards,
+        max_files=max_files if max_files > 0 else None,
     )
 
 
@@ -320,6 +326,15 @@ def main() -> None:
             value=int(saved.get("ollama_timeout", 120)),
             step=30,
         )
+        max_files = st.number_input(
+            "Max source files (0 = unlimited)",
+            min_value=0,
+            max_value=500,
+            value=int(saved.get("max_files", 0)),
+            step=1,
+        )
+        export_quiz_csv = st.checkbox("Export quizzes.csv", value=True)
+        export_flashcards = st.checkbox("Export flashcards.json", value=True)
 
         run_btn = st.button("Generate", type="primary", use_container_width=True)
 
@@ -397,6 +412,9 @@ def main() -> None:
         checkpoint=bool(checkpoint),
         resume_checkpoint=resume_checkpoint.strip() if resume_checkpoint and resume_checkpoint.strip() else None,
         ollama_timeout=float(ollama_timeout),
+        export_quiz_csv=bool(export_quiz_csv),
+        export_flashcards=bool(export_flashcards),
+        max_files=int(max_files),
     )
 
     ensure_directories(args.docs_path, args.db, args.manifest_file, args.output_dir, args.log_dir)
@@ -454,6 +472,11 @@ def main() -> None:
             f"**{plan['document_count']}** file(s) · **{plan.get('total_size_human', '?')}** · "
             f"~**{plan['estimated_llm_calls']}** LLM calls · model `{plan['model']}`"
         )
+        if plan.get("documents_truncated"):
+            st.warning(
+                f"File list truncated: using {plan['document_count']} of {plan.get('documents_total_found', '?')} "
+                f"(max-files={plan.get('max_files')})."
+            )
         details = plan.get("document_details") or []
         if details:
             st.dataframe(
@@ -532,6 +555,8 @@ def main() -> None:
             ("Bundle (JSON)", "bundle", "application/json"),
             ("Generation report (JSON)", "report", "application/json"),
             ("Markdown summary", "markdown", "text/markdown"),
+            ("Flashcards (JSON)", "flashcards", "application/json"),
+            ("Quizzes (CSV)", "quizzes_csv", "text/csv"),
         ]:
             p = Path(paths[key])
             if p.exists():

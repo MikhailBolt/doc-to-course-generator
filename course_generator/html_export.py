@@ -3,6 +3,7 @@ import json
 from datetime import datetime
 from typing import Any, Dict, List
 
+from course_generator import __version__
 from course_generator.utils import estimate_duration_minutes
 
 
@@ -296,6 +297,8 @@ def build_course_html(
     .progress-wrap {{ height:10px; border-radius:999px; background:#e2e8f0; overflow:hidden; margin-top:12px; }}
     .progress-bar {{ height:100%; width:0%; background:linear-gradient(90deg, #2563eb, #38bdf8); transition:width 0.3s ease; }}
     .footer {{ margin-top:28px; color:var(--muted); font-size:0.95rem; text-align:center; }}
+    .back-to-top {{ position:fixed; right:24px; bottom:24px; z-index:20; background:var(--primary); color:#fff; padding:10px 14px; border-radius:999px; text-decoration:none; font-size:0.9rem; box-shadow:var(--shadow); }}
+    .back-to-top:hover {{ filter:brightness(1.08); }}
     @media (max-width:980px) {{ .layout {{ grid-template-columns:1fr; }} .sidebar {{ position:relative; height:auto; }} .content {{ padding:18px; }} }}
     @media print {{
       body {{ background:#fff; }}
@@ -335,9 +338,10 @@ def build_course_html(
       {lesson_sections_html}
       <section class="card" id="glossary"><h2>{labels['glossary']}</h2><div class="glossary-grid">{glossary_html}</div></section>
       {final_quiz_section}
-      <div class="footer">{labels['generated_on']} {generated_at}</div>
+      <div class="footer">{labels['generated_on']} {generated_at} · Doc-to-Course Generator v{html.escape(__version__)}</div>
     </main>
   </div>
+  <a class="back-to-top" href="#overview" title="Back to top">↑</a>
   <script>
     const SCORE_LABEL = {json.dumps(labels['score'])};
     function getQuizCards(prefix) {{ return Array.from(document.querySelectorAll(`[data-question^="${{prefix}}-q-"]`)); }}

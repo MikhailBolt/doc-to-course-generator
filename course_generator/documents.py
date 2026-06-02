@@ -13,6 +13,8 @@ class DocCollection(NamedTuple):
 
     files: List[Path]
     root: Path
+    truncated: bool = False
+    total_found: int = 0
 
 
 def document_display_name(file_path: Path, labels_base: Path) -> str:
@@ -22,7 +24,7 @@ def document_display_name(file_path: Path, labels_base: Path) -> str:
         return file_path.name
 
 
-def collect_source_files(docs_path: str, *, recursive: bool = False) -> DocCollection:
+def collect_source_files(docs_path: str, *, recursive: bool = False, max_files: int | None = None) -> DocCollection:
     path = Path(docs_path)
 
     if not path.exists():
@@ -31,7 +33,7 @@ def collect_source_files(docs_path: str, *, recursive: bool = False) -> DocColle
     if path.is_file():
         if path.suffix.lower() not in SUPPORTED_EXTENSIONS:
             raise DocumentSourceError(f"'{docs_path}' is not a supported file type ({', '.join(sorted(SUPPORTED_EXTENSIONS))}).")
-        return DocCollection(files=[path], root=path.parent.resolve())
+        return DocCollection(files=[path], root=path.parent.resolve(), truncated=False, total_found=1)
 
     root = path.resolve()
 
@@ -44,12 +46,16 @@ def collect_source_files(docs_path: str, *, recursive: bool = False) -> DocColle
             return found
         return sorted([p for p in root.iterdir() if p.is_file() and p.suffix.lower() in SUPPORTED_EXTENSIONS])
 
-    source_files = matching_files()
-    if not source_files:
+    all_files = matching_files()
+    if not all_files:
         hint = " (try --recursive-docs for subfolders)" if not recursive else ""
         raise DocumentSourceError(f"No supported files found in '{docs_path}'.{hint}")
 
-    return DocCollection(files=source_files, root=root)
+    total_found = len(all_files)
+    truncated = bool(max_files is not None and max_files > 0 and total_found > max_files)
+    source_files = all_files[:max_files] if truncated else all_files
+
+    return DocCollection(files=source_files, root=root, truncated=truncated, total_found=total_found)
 
 
 def file_fingerprint(file_path: Path) -> str:

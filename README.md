@@ -1,6 +1,6 @@
 # 📚 Doc-to-Course Generator
 
-**Version 1.3.0**
+**Version 1.4.0**
 
 Generate a structured **HTML training course** and **assessment quizzes** from documents using **local LLMs**, **RAG**, **FAISS**, and **Ollama**.
 
@@ -32,6 +32,9 @@ python main.py --version
 - **Dry-run** shows file sizes; delivery ZIP includes `delivery_manifest.txt`
 - **Checkpoints** to resume interrupted runs (`--checkpoint`, `--resume-checkpoint`)
 - **`--list-runs`** — view recent generation reports from CLI
+- **`flashcards.json`** and **`quizzes.csv`** (LMS-friendly) on each full run
+- **`--validate-outline`** — check outline JSON before generation
+- **`--max-files`** — cap how many source files are indexed
 - **CLI presets** (`--preset quick|full|outline`)
 - **Recursive docs** (`--recursive-docs` / `DOCS_RECURSIVE` / Streamlit “Scan subfolders”)
 - Relative source labels in RAG for nested files (fewer name collisions)
@@ -156,6 +159,7 @@ OUTLINE_RAG_MAX_CHARS=12000
 - `course_delivery.zip` (all of the above in one archive)
 - `course_summary.docx` (optional, `--export-docx`)
 - `course_summary.pdf` (optional, `--export-pdf`)
+- `flashcards.json` / `quizzes.csv` (on by default; `--no-export-flashcards`, `--no-export-quiz-csv`)
 - `delivery_manifest.txt` (inside `course_delivery.zip`)
 
 ---

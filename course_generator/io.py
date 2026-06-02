@@ -79,6 +79,23 @@ def save_course_pdf(output_dir: str, markdown_text: str, output_prefix: str = ""
     return export_markdown_to_pdf(markdown_text, path)
 
 
+def save_flashcards_json(output_dir: str, cards: List[Dict[str, Any]], output_prefix: str = "") -> str:
+    return save_json(build_output_path(output_dir, "flashcards.json", output_prefix), cards)
+
+
+def save_quizzes_csv(
+    output_dir: str,
+    pretest_data: List[Dict[str, Any]],
+    quiz_data: List[Dict[str, Any]],
+    output_prefix: str = "",
+) -> str:
+    from course_generator.quiz_export import combined_quiz_csv_text
+
+    path = build_output_path(output_dir, "quizzes.csv", output_prefix)
+    path.write_text(combined_quiz_csv_text(pretest_data, quiz_data), encoding="utf-8-sig")
+    return str(path)
+
+
 def save_lesson_summaries(output_dir: str, lesson_payloads: List[Dict[str, Any]], outline: Dict[str, Any], output_prefix: str = "") -> str:
     path = build_output_path(output_dir, "lesson_summaries.json", output_prefix)
     lessons = outline.get("lessons", [])
@@ -94,6 +111,7 @@ def save_lesson_summaries(output_dir: str, lesson_payloads: List[Dict[str, Any]]
             "key_takeaways": lesson_payload.get("key_takeaways", []),
             "sources": lesson_payload.get("sources", []),
             "source_excerpts": lesson_payload.get("source_excerpts", []),
+            "generation_mode": lesson_payload.get("generation_mode", "unknown"),
         })
     return save_json(path, payload)
 
@@ -108,6 +126,8 @@ def save_generation_report(
     elapsed_seconds: float,
     outline_rag_used: bool,
     quality_score: Dict[str, Any] | None = None,
+    lesson_payloads: List[Dict[str, Any]] | None = None,
+    flashcards_count: int | None = None,
 ) -> str:
     path = build_output_path(output_dir, "generation_report.json", args.output_prefix)
     from course_generator import __version__
@@ -141,6 +161,12 @@ def save_generation_report(
         "recursive_docs": getattr(args, "recursive_docs", False),
         "quality": quality_score or {},
         "llm_quality_review": (quality_score or {}).get("llm_review", ""),
+        "lessons_fallback_count": sum(
+            1 for p in (lesson_payloads or []) if isinstance(p, dict) and p.get("generation_mode") == "fallback"
+        ),
+        "flashcards_count": flashcards_count if flashcards_count is not None else 0,
+        "export_quiz_csv": getattr(args, "export_quiz_csv", False),
+        "export_flashcards": getattr(args, "export_flashcards", False),
     }
     return save_json(path, report)
 

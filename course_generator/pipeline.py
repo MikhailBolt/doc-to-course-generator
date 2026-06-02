@@ -18,11 +18,14 @@ from course_generator.generation import (
 )
 from course_generator.html_export import build_course_html, build_markdown_summary
 from course_generator.preflight import require_ollama
+from course_generator.flashcards import build_flashcards
 from course_generator.io import (
     load_outline_json,
     save_course_bundle,
     save_course_docx,
     save_course_pdf,
+    save_flashcards_json,
+    save_quizzes_csv,
     save_course_html,
     save_course_metadata,
     save_generation_report,
@@ -166,7 +169,14 @@ def run_pipeline(args: Namespace, progress: Optional[ProgressCallback] = None) -
     started = time.time()
 
     _notify(progress, "load_documents", "Collecting source files")
-    dc = collect_source_files(args.docs_path, recursive=getattr(args, "recursive_docs", False))
+    max_files = getattr(args, "max_files", None) or None
+    if max_files is not None and int(max_files) <= 0:
+        max_files = None
+    dc = collect_source_files(
+        args.docs_path,
+        recursive=getattr(args, "recursive_docs", False),
+        max_files=int(max_files) if max_files else None,
+    )
     source_files = dc.files
     labels_base = dc.root
 
@@ -301,6 +311,20 @@ def run_pipeline(args: Namespace, progress: Optional[ProgressCallback] = None) -
         pdf_path = save_course_pdf(args.output_dir, markdown_summary, args.output_prefix)
     bundle_path = save_course_bundle(args.output_dir, outline, docs_info, lesson_payloads, pretest_data, quiz_data, args)
 
+    flashcards_path = ""
+    flashcards_count = 0
+    if getattr(args, "export_flashcards", True):
+        cards = build_flashcards(outline, lesson_payloads)
+        flashcards_count = len(cards)
+        if cards:
+            _notify(progress, "flashcards", f"Saving {flashcards_count} flashcards")
+            flashcards_path = save_flashcards_json(args.output_dir, cards, args.output_prefix)
+
+    quizzes_csv_path = ""
+    if getattr(args, "export_quiz_csv", True) and (pretest_data or quiz_data):
+        _notify(progress, "quiz_csv", "Exporting quizzes.csv")
+        quizzes_csv_path = save_quizzes_csv(args.output_dir, pretest_data, quiz_data, args.output_prefix)
+
     elapsed = time.time() - started
     report_path = save_generation_report(
         args.output_dir,
@@ -312,6 +336,8 @@ def run_pipeline(args: Namespace, progress: Optional[ProgressCallback] = None) -
         elapsed,
         outline_rag_used=outline_rag_used,
         quality_score=quality,
+        lesson_payloads=lesson_payloads,
+        flashcards_count=flashcards_count,
     )
 
     paths = {
@@ -329,6 +355,10 @@ def run_pipeline(args: Namespace, progress: Optional[ProgressCallback] = None) -
         paths["docx"] = docx_path
     if pdf_path:
         paths["pdf"] = pdf_path
+    if flashcards_path:
+        paths["flashcards"] = flashcards_path
+    if quizzes_csv_path:
+        paths["quizzes_csv"] = quizzes_csv_path
 
     zip_path = ""
     if not getattr(args, "no_delivery_zip", False):

@@ -319,11 +319,13 @@ CONTEXT:
             "key_takeaways": [str(x).strip() for x in key_takeaways if str(x).strip()][:5],
             "sources": deduplicate_sources(sources),
             "source_excerpts": source_excerpts[: min(3, len(source_excerpts))] if include_source_excerpts else [],
+            "generation_mode": "llm",
         }
     except Exception:
         fallback = fallback_lesson_html(lesson_title, lesson_goal, key_points, retrieved_docs)
         fallback["sources"] = deduplicate_sources(sources)
         fallback["source_excerpts"] = source_excerpts[: min(3, len(source_excerpts))] if include_source_excerpts else []
+        fallback["generation_mode"] = "fallback"
         return fallback
 
 

@@ -34,6 +34,7 @@ from course_generator.constants import (
 from course_generator.errors import DocumentSourceError
 from course_generator.health import check_ollama, format_ollama_message, list_ollama_models
 from course_generator.history import list_recent_reports
+from course_generator.io import load_outline_json
 from course_generator.pipeline import run_pipeline
 from course_generator.presets import PRESET_CLI_SLUGS, apply_cli_preset
 
@@ -154,6 +155,30 @@ def parse_args() -> argparse.Namespace:
         help="Timeout in seconds for each Ollama request (default: OLLAMA_TIMEOUT env or 120).",
     )
     parser.add_argument("--list-runs", action="store_true", help="List recent generation reports and exit.")
+    parser.add_argument(
+        "--validate-outline",
+        metavar="PATH",
+        default=None,
+        help="Validate a course_outline.json file and exit.",
+    )
+    parser.add_argument(
+        "--max-files",
+        type=int,
+        default=int(os.getenv("MAX_SOURCE_FILES", "0")) or None,
+        help="Limit number of source files (0 = no limit). Useful for large folders.",
+    )
+    parser.add_argument(
+        "--export-quiz-csv",
+        action=argparse.BooleanOptionalAction,
+        default=os.getenv("EXPORT_QUIZ_CSV", "true").lower() in {"1", "true", "yes"},
+        help="Export quizzes.csv for LMS import (default: on).",
+    )
+    parser.add_argument(
+        "--export-flashcards",
+        action=argparse.BooleanOptionalAction,
+        default=os.getenv("EXPORT_FLASHCARDS", "true").lower() in {"1", "true", "yes"},
+        help="Export flashcards.json study deck (default: on).",
+    )
     return parser.parse_args()
 
 
@@ -172,6 +197,17 @@ def log_message(log_dir: str, message: str) -> None:
 
 def main() -> None:
     args = parse_args()
+
+    if args.validate_outline:
+        try:
+            outline = load_outline_json(args.validate_outline)
+        except Exception as exc:
+            print(f"(X) Invalid outline: {exc}")
+            sys.exit(1)
+        print(f"[OK] Valid outline: {outline.get('course_title', '')}")
+        print(f"     Lessons: {len(outline.get('lessons', []))}")
+        print(f"     Glossary: {len(outline.get('glossary', []))}")
+        sys.exit(0)
 
     if args.list_runs:
         runs = list_recent_reports(args.output_dir, limit=12)
@@ -285,6 +321,10 @@ def main() -> None:
         print(f"Course DOCX:        {paths['docx']}")
     if paths.get("pdf"):
         print(f"Course PDF:         {paths['pdf']}")
+    if paths.get("flashcards"):
+        print(f"Flashcards JSON:    {paths['flashcards']}")
+    if paths.get("quizzes_csv"):
+        print(f"Quizzes CSV:        {paths['quizzes_csv']}")
     if paths.get("delivery_zip"):
         print(f"Delivery ZIP:       {paths['delivery_zip']}")
     if result.get("checkpoint"):

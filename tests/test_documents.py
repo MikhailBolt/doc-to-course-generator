@@ -35,3 +35,12 @@ def test_document_display_name_under_root(tmp_path):
     lab = document_display_name(fp.resolve(), root)
     norm = lab.replace("\\", "/")
     assert norm.endswith("ch/note.txt")
+
+
+def test_max_files_truncates(tmp_path):
+    for i in range(5):
+        (tmp_path / f"f{i}.txt").write_text("x", encoding="utf-8")
+    dc = collect_source_files(str(tmp_path), recursive=False, max_files=2)
+    assert len(dc.files) == 2
+    assert dc.truncated is True
+    assert dc.total_found == 5

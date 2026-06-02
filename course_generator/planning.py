@@ -29,6 +29,9 @@ def estimate_llm_calls(args: Namespace, lesson_count: int) -> int:
 
 
 def build_run_plan(dc: DocCollection, args: Namespace) -> Dict[str, Any]:
+    max_files = getattr(args, "max_files", None)
+    if max_files is not None and int(max_files) <= 0:
+        max_files = None
     lesson_est = (int(args.min_lessons) + int(args.max_lessons)) // 2
     documents = [document_display_name(p, dc.root) for p in dc.files]
     document_details = [
@@ -70,6 +73,10 @@ def build_run_plan(dc: DocCollection, args: Namespace) -> Dict[str, Any]:
             steps.append("Export DOCX summary")
         if getattr(args, "export_pdf", False):
             steps.append("Export PDF summary")
+        if getattr(args, "export_flashcards", True):
+            steps.append("Export flashcards.json")
+        if getattr(args, "export_quiz_csv", True):
+            steps.append("Export quizzes.csv")
         if not getattr(args, "no_delivery_zip", False):
             steps.append("Package delivery ZIP")
 
@@ -79,6 +86,9 @@ def build_run_plan(dc: DocCollection, args: Namespace) -> Dict[str, Any]:
         "total_size_bytes": total_bytes,
         "total_size_human": _human_size(total_bytes),
         "document_count": len(documents),
+        "documents_truncated": dc.truncated,
+        "documents_total_found": dc.total_found or len(documents),
+        "max_files": int(max_files) if max_files else None,
         "recursive_docs": bool(getattr(args, "recursive_docs", False)),
         "docs_root": str(dc.root),
         "estimated_lessons": lesson_est,
