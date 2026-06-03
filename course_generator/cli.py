@@ -31,7 +31,7 @@ from course_generator.constants import (
     DEFAULT_TOP_K,
     SUPPORTED_EXTENSIONS,
 )
-from course_generator.errors import DocumentSourceError
+from course_generator.config_loader import apply_config_file
 from course_generator.health import check_ollama, format_ollama_message, list_ollama_models
 from course_generator.history import list_recent_reports
 from course_generator.io import load_outline_json
@@ -54,7 +54,7 @@ def ensure_directories(docs_path: str, db_path: str, manifest_file: str, output_
     Path(log_dir).mkdir(parents=True, exist_ok=True)
 
 
-def parse_args() -> argparse.Namespace:
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Generate HTML course and quizzes from local documents using LLM + RAG",
     )
@@ -179,7 +179,21 @@ def parse_args() -> argparse.Namespace:
         default=os.getenv("EXPORT_FLASHCARDS", "true").lower() in {"1", "true", "yes"},
         help="Export flashcards.json study deck (default: on).",
     )
-    return parser.parse_args()
+    parser.add_argument(
+        "--config",
+        metavar="PATH",
+        default=None,
+        help="JSON file with generation options (CLI flags override config values).",
+    )
+    return parser
+
+
+def default_args() -> argparse.Namespace:
+    return build_parser().parse_args([])
+
+
+def parse_args() -> argparse.Namespace:
+    return build_parser().parse_args()
 
 
 def _cli_progress(stage: str, detail: str) -> None:
@@ -196,7 +210,15 @@ def log_message(log_dir: str, message: str) -> None:
 
 
 def main() -> None:
+    defaults = default_args()
     args = parse_args()
+
+    if args.config:
+        try:
+            apply_config_file(args, args.config, defaults)
+        except Exception as exc:
+            print(f"(X) Config error: {exc}")
+            sys.exit(1)
 
     if args.validate_outline:
         try:
@@ -314,6 +336,8 @@ def main() -> None:
     print(f"Final quiz JSON:    {paths['quiz']}")
     print(f"Lesson summaries:   {paths['summaries']}")
     print(f"Markdown summary:   {paths['markdown']}")
+    if paths.get("course_full_md"):
+        print(f"Full course MD:     {paths['course_full_md']}")
     print(f"Metadata:           {paths['metadata']}")
     print(f"Bundle:             {paths['bundle']}")
     print(f"Report:             {paths['report']}")
@@ -323,6 +347,8 @@ def main() -> None:
         print(f"Course PDF:         {paths['pdf']}")
     if paths.get("flashcards"):
         print(f"Flashcards JSON:    {paths['flashcards']}")
+    if paths.get("anki_tsv"):
+        print(f"Anki deck (TSV):    {paths['anki_tsv']}")
     if paths.get("quizzes_csv"):
         print(f"Quizzes CSV:        {paths['quizzes_csv']}")
     if paths.get("delivery_zip"):

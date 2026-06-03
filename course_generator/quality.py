@@ -169,21 +169,32 @@ def compute_quality_score(
     if lesson_payloads:
         with_sources = sum(1 for p in lesson_payloads if p.get("sources"))
         src_ratio = with_sources / len(lesson_payloads)
+        llm_count = sum(1 for p in lesson_payloads if p.get("generation_mode") != "fallback")
+        llm_ratio = llm_count / len(lesson_payloads)
         add(
             "lesson_sources",
             "Lessons with retrieved sources",
-            round(5 * src_ratio),
-            5,
+            round(3 * src_ratio),
+            3,
             src_ratio >= 0.8,
             f"{with_sources}/{len(lesson_payloads)} lessons",
         )
+        add(
+            "lesson_llm",
+            "Lessons from LLM (not fallback)",
+            round(2 * llm_ratio),
+            2,
+            llm_ratio >= 0.9,
+            f"{llm_count}/{len(lesson_payloads)} llm-generated",
+        )
     else:
-        add("lesson_sources", "Lessons with retrieved sources", 0, 5, False, "no lesson payloads")
+        add("lesson_sources", "Lessons with retrieved sources", 0, 3, False, "no lesson payloads")
+        add("lesson_llm", "Lessons from LLM (not fallback)", 0, 2, False, "no lesson payloads")
 
     overall = round(100 * total / max_total) if max_total else 0
     overall = max(0, min(100, overall))
 
-    recommendations = _build_recommendations(checks, overall, args, outline_rag_used)
+    recommendations = _build_recommendations(checks, overall, args, outline_rag_used, lesson_payloads)
 
     return {
         "overall_score": overall,
@@ -199,6 +210,7 @@ def _build_recommendations(
     overall: int,
     args: Namespace,
     outline_rag_used: bool,
+    lesson_payloads: List[Dict[str, Any]],
 ) -> List[str]:
     tips: List[str] = []
     failed = {c["id"]: c for c in checks if not c.get("passed")}
@@ -213,6 +225,13 @@ def _build_recommendations(
 
     if "lesson_completeness" in failed:
         tips.append("Lessons look thin — increase --top-k or enable review pass for fuller lesson sections.")
+
+    if lesson_payloads:
+        fallback_n = sum(1 for p in lesson_payloads if p.get("generation_mode") == "fallback")
+        if fallback_n:
+            tips.append(
+                f"{fallback_n} lesson(s) used fallback content (LLM JSON failed) — try a stronger model or --ollama-timeout."
+            )
 
     if "quiz_coverage" in failed:
         tips.append("Final quiz misses lessons — raise --quiz-questions or rerun with review pass enabled.")

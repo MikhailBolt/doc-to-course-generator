@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.5.0] — 2026-05-29
+
+### Added
+- `course_full.md` extended Markdown export with lesson bodies and quizzes
+- `flashcards_anki.txt` for Anki import
+- `--config` JSON configuration file (`config.example.json`)
+- HTML course dark/light theme toggle (localStorage)
+- Quality check for LLM vs fallback lesson generation
+- Streamlit: flashcard preview, safer download buttons
+
 ## [1.4.0] — 2026-05-29
 
 ### Added

@@ -1,6 +1,6 @@
 # 📚 Doc-to-Course Generator
 
-**Version 1.4.0**
+**Version 1.5.0**
 
 Generate a structured **HTML training course** and **assessment quizzes** from documents using **local LLMs**, **RAG**, **FAISS**, and **Ollama**.
 
@@ -35,6 +35,10 @@ python main.py --version
 - **`flashcards.json`** and **`quizzes.csv`** (LMS-friendly) on each full run
 - **`--validate-outline`** — check outline JSON before generation
 - **`--max-files`** — cap how many source files are indexed
+- **`--config`** — JSON file with generation defaults (`config.example.json`)
+- **`course_full.md`** — full course text + quiz reference
+- **`flashcards_anki.txt`** — Anki import (TSV)
+- HTML course: **dark/light theme** toggle (saved in browser)
 - **CLI presets** (`--preset quick|full|outline`)
 - **Recursive docs** (`--recursive-docs` / `DOCS_RECURSIVE` / Streamlit “Scan subfolders”)
 - Relative source labels in RAG for nested files (fewer name collisions)

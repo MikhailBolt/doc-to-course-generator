@@ -555,12 +555,14 @@ def main() -> None:
             ("Bundle (JSON)", "bundle", "application/json"),
             ("Generation report (JSON)", "report", "application/json"),
             ("Markdown summary", "markdown", "text/markdown"),
+            ("Full course (Markdown)", "course_full_md", "text/markdown"),
             ("Flashcards (JSON)", "flashcards", "application/json"),
+            ("Anki deck (TSV)", "anki_tsv", "text/plain"),
             ("Quizzes (CSV)", "quizzes_csv", "text/csv"),
         ]:
-            p = Path(paths[key])
-            if p.exists():
-                st.download_button(label, data=p.read_bytes(), file_name=p.name, mime=mime)
+            p = paths.get(key)
+            if p and Path(p).exists():
+                st.download_button(label, data=Path(p).read_bytes(), file_name=Path(p).name, mime=mime)
 
         docx_p = paths.get("docx")
         if docx_p and Path(docx_p).exists():
@@ -588,6 +590,15 @@ def main() -> None:
                 file_name=Path(zip_p).name,
                 mime="application/zip",
             )
+
+        cards_path = paths.get("flashcards")
+        if cards_path and Path(cards_path).exists():
+            import json
+
+            cards = json.loads(Path(cards_path).read_text(encoding="utf-8"))
+            if cards:
+                with st.expander(f"Flashcards preview ({len(cards)})", expanded=False):
+                    st.dataframe(cards[:12], use_container_width=True, hide_index=True)
 
         outline = result.get("outline", {})
         if outline:

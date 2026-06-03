@@ -1,0 +1,10 @@
+{
+  "docs_path": "docs",
+  "model": "llama3",
+  "language": "en",
+  "min_lessons": 4,
+  "max_lessons": 6,
+  "preset": null,
+  "export_flashcards": true,
+  "export_quiz_csv": true
+}

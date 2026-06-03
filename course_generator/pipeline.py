@@ -16,15 +16,17 @@ from course_generator.generation import (
     review_outline,
     review_quiz,
 )
-from course_generator.html_export import build_course_html, build_markdown_summary
+from course_generator.html_export import build_course_html, build_full_course_markdown, build_markdown_summary
 from course_generator.preflight import require_ollama
-from course_generator.flashcards import build_flashcards
+from course_generator.flashcards import build_flashcards, flashcards_to_anki_tsv
 from course_generator.io import (
     load_outline_json,
+    save_anki_tsv,
     save_course_bundle,
     save_course_docx,
     save_course_pdf,
     save_flashcards_json,
+    save_full_course_markdown,
     save_quizzes_csv,
     save_course_html,
     save_course_metadata,
@@ -280,6 +282,9 @@ def run_pipeline(args: Namespace, progress: Optional[ProgressCallback] = None) -
         outline, lesson_payloads, docs_info, pretest_data, quiz_data, args.language, args.include_source_excerpts
     )
     markdown_summary = build_markdown_summary(outline, docs_info, lesson_payloads, args.language)
+    full_markdown = build_full_course_markdown(
+        outline, docs_info, lesson_payloads, pretest_data, quiz_data, args.language
+    )
 
     quality = compute_quality_score(
         outline,
@@ -301,6 +306,7 @@ def run_pipeline(args: Namespace, progress: Optional[ProgressCallback] = None) -
     metadata_path = save_course_metadata(args.output_dir, outline, docs_info, args)
     summaries_path = save_lesson_summaries(args.output_dir, lesson_payloads, outline, args.output_prefix)
     markdown_path = save_markdown_summary(args.output_dir, markdown_summary, args.output_prefix)
+    full_md_path = save_full_course_markdown(args.output_dir, full_markdown, args.output_prefix)
     docx_path = ""
     if getattr(args, "export_docx", False):
         _notify(progress, "docx", "Exporting DOCX summary")
@@ -312,6 +318,7 @@ def run_pipeline(args: Namespace, progress: Optional[ProgressCallback] = None) -
     bundle_path = save_course_bundle(args.output_dir, outline, docs_info, lesson_payloads, pretest_data, quiz_data, args)
 
     flashcards_path = ""
+    anki_path = ""
     flashcards_count = 0
     if getattr(args, "export_flashcards", True):
         cards = build_flashcards(outline, lesson_payloads)
@@ -319,6 +326,7 @@ def run_pipeline(args: Namespace, progress: Optional[ProgressCallback] = None) -
         if cards:
             _notify(progress, "flashcards", f"Saving {flashcards_count} flashcards")
             flashcards_path = save_flashcards_json(args.output_dir, cards, args.output_prefix)
+            anki_path = save_anki_tsv(args.output_dir, flashcards_to_anki_tsv(cards), args.output_prefix)
 
     quizzes_csv_path = ""
     if getattr(args, "export_quiz_csv", True) and (pretest_data or quiz_data):
@@ -347,6 +355,7 @@ def run_pipeline(args: Namespace, progress: Optional[ProgressCallback] = None) -
         "quiz": quiz_path,
         "summaries": summaries_path,
         "markdown": markdown_path,
+        "course_full_md": full_md_path,
         "metadata": metadata_path,
         "bundle": bundle_path,
         "report": report_path,
@@ -357,6 +366,8 @@ def run_pipeline(args: Namespace, progress: Optional[ProgressCallback] = None) -
         paths["pdf"] = pdf_path
     if flashcards_path:
         paths["flashcards"] = flashcards_path
+    if anki_path:
+        paths["anki_tsv"] = anki_path
     if quizzes_csv_path:
         paths["quizzes_csv"] = quizzes_csv_path
 

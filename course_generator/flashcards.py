@@ -41,3 +41,16 @@ def build_flashcards(outline: Dict[str, Any], lesson_payloads: List[Dict[str, An
                 cards.append({"front": f"{title} — takeaway", "back": tw, "source": "lesson_takeaway"})
 
     return cards[:200]
+
+
+def flashcards_to_anki_tsv(cards: List[Dict[str, str]]) -> str:
+    """Tab-separated deck for Anki import (front, back, tags)."""
+    lines: List[str] = []
+    for card in cards:
+        front = str(card.get("front", "")).replace("\t", " ").replace("\n", " ").strip()
+        back = str(card.get("back", "")).replace("\t", " ").replace("\n", " ").strip()
+        tag = str(card.get("source", "course")).replace(" ", "_")
+        if front and back:
+            lines.append(f"{front}\t{back}\t{tag}")
+    return "\n".join(lines) + ("\n" if lines else "")
+

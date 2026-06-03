@@ -65,6 +65,14 @@ def save_markdown_summary(output_dir: str, markdown_text: str, output_prefix: st
     return save_text(build_output_path(output_dir, "course_summary.md", output_prefix), markdown_text)
 
 
+def save_full_course_markdown(output_dir: str, markdown_text: str, output_prefix: str = "") -> str:
+    return save_text(build_output_path(output_dir, "course_full.md", output_prefix), markdown_text)
+
+
+def save_anki_tsv(output_dir: str, tsv_text: str, output_prefix: str = "") -> str:
+    return save_text(build_output_path(output_dir, "flashcards_anki.txt", output_prefix), tsv_text)
+
+
 def save_course_docx(output_dir: str, markdown_text: str, output_prefix: str = "") -> str:
     from course_generator.docx_export import export_markdown_to_docx
 

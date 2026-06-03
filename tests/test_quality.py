@@ -29,8 +29,18 @@ def test_quality_score_basic_outline():
         ],
     }
     lesson_payloads = [
-        {"summary": "s1", "key_takeaways": ["a", "b"], "sources": [{"document_name": "d.pdf"}]},
-        {"summary": "s2", "key_takeaways": ["c", "d"], "sources": [{"document_name": "d.pdf"}]},
+        {
+            "summary": "s1",
+            "key_takeaways": ["a", "b"],
+            "sources": [{"document_name": "d.pdf"}],
+            "generation_mode": "llm",
+        },
+        {
+            "summary": "s2",
+            "key_takeaways": ["c", "d"],
+            "sources": [{"document_name": "d.pdf"}],
+            "generation_mode": "llm",
+        },
     ]
     args = Namespace(
         min_lessons=2,
