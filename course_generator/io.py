@@ -73,6 +73,14 @@ def save_anki_tsv(output_dir: str, tsv_text: str, output_prefix: str = "") -> st
     return save_text(build_output_path(output_dir, "flashcards_anki.txt", output_prefix), tsv_text)
 
 
+def save_quizzes_gift(output_dir: str, gift_text: str, output_prefix: str = "") -> str:
+    return save_text(build_output_path(output_dir, "quizzes.gift", output_prefix), gift_text)
+
+
+def save_output_index(output_dir: str, markdown_text: str, output_prefix: str = "") -> str:
+    return save_text(build_output_path(output_dir, "OUTPUT_INDEX.md", output_prefix), markdown_text)
+
+
 def save_course_docx(output_dir: str, markdown_text: str, output_prefix: str = "") -> str:
     from course_generator.docx_export import export_markdown_to_docx
 

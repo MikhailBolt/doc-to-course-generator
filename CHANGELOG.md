@@ -1,5 +1,30 @@
 # Changelog
 
+## [1.7.0] — 2026-05-29
+
+### Added
+- **Batch mode** (`--batch-dir`) for sequential multi-config runs
+- `--check-embeddings` to verify HuggingFace embedding model
+- `--diff-reports` to compare two `generation_report.json` files
+- `--json-result` machine-readable success payload for scripts/CI
+- Post-run **output audit** warnings for missing artifacts
+- Streamlit: table of **saved checkpoints**
+- Example batch config: `batch_configs/example-quick.json`
+
+## [1.6.0] — 2026-05-29
+
+### Added
+- Moodle **GIFT** export (`quizzes.gift`, `--export-gift`)
+- `OUTPUT_INDEX.md` describing all artifacts (included in delivery ZIP)
+- `--init-dirs` to scaffold project folders and sample doc
+- `--print-config` to dump effective settings as JSON
+- `python -m course_generator` entry point
+- Dry-run **estimated runtime** (minutes)
+- Streamlit: explore saved FAISS index without running full pipeline
+
+### Changed
+- Lessons: second LLM attempt (`llm_retry`) before fallback HTML
+
 ## [1.5.0] — 2026-05-29
 
 ### Added

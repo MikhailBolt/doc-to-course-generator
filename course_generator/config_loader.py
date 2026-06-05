@@ -37,6 +37,7 @@ CONFIG_KEYS: Set[str] = {
     "export_pdf",
     "export_quiz_csv",
     "export_flashcards",
+    "export_gift",
     "quality_llm_review",
     "recursive_docs",
     "outline_only",

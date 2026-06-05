@@ -33,8 +33,11 @@ from course_generator.constants import (
     DEFAULT_TOP_K,
     SUPPORTED_EXTENSIONS,
 )
+from course_generator.checkpoints import find_recent_checkpoints
 from course_generator.history import list_recent_reports
 from course_generator.pipeline import run_pipeline
+from course_generator.rag import load_existing_vectorstore, retrieve_lesson_context
+from course_generator.rag import load_existing_vectorstore, retrieve_lesson_context
 from course_generator.user_settings import load_user_settings, save_user_settings
 
 
@@ -87,6 +90,7 @@ def _make_args(
     ollama_timeout: float,
     export_quiz_csv: bool,
     export_flashcards: bool,
+    export_gift: bool,
     max_files: int,
 ) -> Namespace:
     return Namespace(
@@ -131,6 +135,7 @@ def _make_args(
         ollama_timeout=ollama_timeout,
         export_quiz_csv=export_quiz_csv,
         export_flashcards=export_flashcards,
+        export_gift=export_gift,
         max_files=max_files if max_files > 0 else None,
     )
 
@@ -335,11 +340,34 @@ def main() -> None:
         )
         export_quiz_csv = st.checkbox("Export quizzes.csv", value=True)
         export_flashcards = st.checkbox("Export flashcards.json", value=True)
+        export_gift = st.checkbox("Export Moodle GIFT (quizzes.gift)", value=True)
 
         run_btn = st.button("Generate", type="primary", use_container_width=True)
 
     if not run_btn:
         st.info("Pick a source (upload or docs folder), then click **Generate**.")
+        with st.expander("Explore saved FAISS index (no generation)"):
+            st.caption("Search chunks from the last built index in `vectorstore/`.")
+            rag_query = st.text_input("Search query", placeholder="e.g. main concepts from chapter 2")
+            rag_top_k = st.slider("Top-k chunks", 1, 12, 4)
+            if st.button("Search index", use_container_width=True) and rag_query.strip():
+                vs = load_existing_vectorstore(DEFAULT_DB_FAISS_PATH, embedding_model)
+                if vs is None:
+                    st.warning("No FAISS index found. Run generation once or place index under vectorstore/.")
+                else:
+                    hits = retrieve_lesson_context(vs, rag_query.strip(), [], int(rag_top_k), retrieval_type)
+                    for i, doc in enumerate(hits, start=1):
+                        name = doc.metadata.get("document_name", "?")
+                        page = doc.metadata.get("page")
+                        page_n = page + 1 if isinstance(page, int) else "?"
+                        st.markdown(f"**{i}.** `{name}` p.{page_n} · chunk {doc.metadata.get('chunk_id', '?')}")
+                        st.text(doc.page_content[:1200])
+        checkpoints = find_recent_checkpoints(DEFAULT_OUTPUT_DIR, limit=5)
+        if checkpoints:
+            st.subheader("Saved checkpoints")
+            st.caption("Paste a path into **Resume from checkpoint** in the sidebar to continue.")
+            st.dataframe(checkpoints, use_container_width=True, hide_index=True)
+
         recent = list_recent_reports(DEFAULT_OUTPUT_DIR, limit=6)
         if recent:
             st.subheader("Recent runs")
@@ -414,6 +442,7 @@ def main() -> None:
         ollama_timeout=float(ollama_timeout),
         export_quiz_csv=bool(export_quiz_csv),
         export_flashcards=bool(export_flashcards),
+        export_gift=bool(export_gift),
         max_files=int(max_files),
     )
 
@@ -470,7 +499,8 @@ def main() -> None:
         st.success(f"Dry run in {result['elapsed_seconds']}s — no LLM calls.")
         st.markdown(
             f"**{plan['document_count']}** file(s) · **{plan.get('total_size_human', '?')}** · "
-            f"~**{plan['estimated_llm_calls']}** LLM calls · model `{plan['model']}`"
+            f"~**{plan['estimated_llm_calls']}** LLM calls · ~**{plan.get('estimated_runtime_minutes', '?')}** min · "
+            f"model `{plan['model']}`"
         )
         if plan.get("documents_truncated"):
             st.warning(
@@ -559,6 +589,8 @@ def main() -> None:
             ("Flashcards (JSON)", "flashcards", "application/json"),
             ("Anki deck (TSV)", "anki_tsv", "text/plain"),
             ("Quizzes (CSV)", "quizzes_csv", "text/csv"),
+            ("Moodle GIFT", "quizzes_gift", "text/plain"),
+            ("Output index", "output_index", "text/markdown"),
         ]:
             p = paths.get(key)
             if p and Path(p).exists():

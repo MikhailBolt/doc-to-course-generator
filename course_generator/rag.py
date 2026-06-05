@@ -1,6 +1,6 @@
 from argparse import Namespace
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from langchain_community.vectorstores import FAISS
 from langchain_huggingface import HuggingFaceEmbeddings
@@ -136,6 +136,15 @@ def build_vectorstore(
     vectorstore.save_local(db_path)
     save_manifest(manifest_file, build_manifest_data(source_files))
     return vectorstore, docs_info
+
+
+def load_existing_vectorstore(db_path: str, embedding_model: str) -> Optional[FAISS]:
+    """Load a saved FAISS index without rebuilding. Returns None if index files are missing."""
+    db_dir = Path(db_path)
+    if not (db_dir / "index.faiss").is_file() or not (db_dir / "index.pkl").is_file():
+        return None
+    embeddings = HuggingFaceEmbeddings(model_name=embedding_model)
+    return FAISS.load_local(str(db_dir), embeddings, allow_dangerous_deserialization=True)
 
 
 def load_or_create_vectorstore(

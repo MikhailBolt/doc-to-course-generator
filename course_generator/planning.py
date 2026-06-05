@@ -12,6 +12,14 @@ def _human_size(num_bytes: int) -> str:
     return f"{num_bytes / (1024 * 1024):.1f} MB"
 
 
+def estimate_runtime_minutes(llm_calls: int, lesson_count: int) -> float:
+    """Rough wall-clock estimate for local Ollama (seconds per call vary by hardware)."""
+    lesson_calls = max(0, lesson_count)
+    other_calls = max(0, llm_calls - lesson_calls)
+    seconds = lesson_calls * 75 + other_calls * 40
+    return round(seconds / 60, 1)
+
+
 def estimate_llm_calls(args: Namespace, lesson_count: int) -> int:
     calls = 1  # outline
     if not args.disable_review_pass:
@@ -77,6 +85,9 @@ def build_run_plan(dc: DocCollection, args: Namespace) -> Dict[str, Any]:
             steps.append("Export flashcards.json")
         if getattr(args, "export_quiz_csv", True):
             steps.append("Export quizzes.csv")
+        if getattr(args, "export_gift", True):
+            steps.append("Export quizzes.gift (Moodle)")
+        steps.append("Write OUTPUT_INDEX.md")
         if not getattr(args, "no_delivery_zip", False):
             steps.append("Package delivery ZIP")
 
@@ -93,6 +104,9 @@ def build_run_plan(dc: DocCollection, args: Namespace) -> Dict[str, Any]:
         "docs_root": str(dc.root),
         "estimated_lessons": lesson_est,
         "estimated_llm_calls": estimate_llm_calls(args, lesson_est),
+        "estimated_runtime_minutes": estimate_runtime_minutes(
+            estimate_llm_calls(args, lesson_est), lesson_est
+        ),
         "model": args.model,
         "embedding_model": args.embedding_model,
         "pipeline_steps": steps,

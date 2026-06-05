@@ -31,8 +31,12 @@ from course_generator.constants import (
     DEFAULT_TOP_K,
     SUPPORTED_EXTENSIONS,
 )
-from course_generator.config_loader import apply_config_file
-from course_generator.health import check_ollama, format_ollama_message, list_ollama_models
+from course_generator.config_loader import CONFIG_KEYS, apply_config_file
+from course_generator.scaffold import init_project_directories
+from course_generator.audit import audit_output_paths
+from course_generator.batch import run_batch
+from course_generator.health import check_embeddings, check_ollama, format_ollama_message, list_ollama_models
+from course_generator.report_diff import diff_generation_reports
 from course_generator.history import list_recent_reports
 from course_generator.io import load_outline_json
 from course_generator.pipeline import run_pipeline
@@ -185,6 +189,45 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="JSON file with generation options (CLI flags override config values).",
     )
+    parser.add_argument(
+        "--export-gift",
+        action=argparse.BooleanOptionalAction,
+        default=os.getenv("EXPORT_GIFT", "true").lower() in {"1", "true", "yes"},
+        help="Export quizzes.gift for Moodle import (default: on).",
+    )
+    parser.add_argument(
+        "--print-config",
+        action="store_true",
+        help="Print effective generation settings as JSON and exit.",
+    )
+    parser.add_argument(
+        "--init-dirs",
+        action="store_true",
+        help="Create docs/, output/, logs/, vectorstore/ and a sample doc, then exit.",
+    )
+    parser.add_argument(
+        "--batch-dir",
+        metavar="DIR",
+        default=None,
+        help="Run generation for each *.json config file in a directory (sequential).",
+    )
+    parser.add_argument(
+        "--check-embeddings",
+        action="store_true",
+        help="Verify the embedding model loads (may download weights on first run), then exit.",
+    )
+    parser.add_argument(
+        "--json-result",
+        action="store_true",
+        help="On success, print a JSON summary to stdout (for scripts/CI).",
+    )
+    parser.add_argument(
+        "--diff-reports",
+        nargs=2,
+        metavar=("REPORT_A", "REPORT_B"),
+        default=None,
+        help="Compare two generation_report.json files and exit.",
+    )
     return parser
 
 
@@ -219,6 +262,23 @@ def main() -> None:
         except Exception as exc:
             print(f"(X) Config error: {exc}")
             sys.exit(1)
+
+    if args.init_dirs:
+        created = init_project_directories()
+        if created:
+            print("[OK] Created:")
+            for item in created:
+                print(f"  - {item}")
+        else:
+            print("[OK] Project folders already exist.")
+        sys.exit(0)
+
+    if args.print_config:
+        import json
+
+        payload = {k: getattr(args, k) for k in sorted(CONFIG_KEYS) if hasattr(args, k)}
+        print(json.dumps(payload, ensure_ascii=False, indent=2, default=str))
+        sys.exit(0)
 
     if args.validate_outline:
         try:
@@ -269,6 +329,25 @@ def main() -> None:
         print(f"[OK] {format_ollama_message(info)}")
         sys.exit(0)
 
+    if args.check_embeddings:
+        info = check_embeddings(args.embedding_model)
+        if not info.get("ok"):
+            print(f"(X) Embedding model failed: {info.get('error', 'unknown')}")
+            sys.exit(1)
+        print(f"[OK] Embedding model '{args.embedding_model}' loaded ({info.get('dimensions', '?')} dims).")
+        sys.exit(0)
+
+    if args.diff_reports:
+        import json
+
+        try:
+            diff = diff_generation_reports(args.diff_reports[0], args.diff_reports[1])
+        except Exception as exc:
+            print(f"(X) {exc}")
+            sys.exit(1)
+        print(json.dumps(diff, ensure_ascii=False, indent=2))
+        sys.exit(0)
+
     try:
         apply_cli_preset(args)
     except ValueError as exc:
@@ -293,6 +372,22 @@ def main() -> None:
 
     log_message(args.log_dir, "Starting course and quiz generation pipeline")
     try:
+        if getattr(args, "batch_dir", None):
+            print(f"--- Batch mode: {args.batch_dir} ---")
+            batch_results = run_batch(args.batch_dir, args, defaults, progress=_cli_progress)
+            failed = [r for r in batch_results if not r.get("ok")]
+            print(f"\n[BATCH] {len(batch_results) - len(failed)}/{len(batch_results)} succeeded.")
+            for row in batch_results:
+                status = "OK" if row.get("ok") else "FAIL"
+                print(f"  [{status}] {row.get('config')}")
+                if not row.get("ok"):
+                    print(f"         {row.get('error', '')}")
+            if getattr(args, "json_result", False):
+                import json
+
+                print(json.dumps({"batch": batch_results}, ensure_ascii=False, indent=2, default=str))
+            sys.exit(1 if failed else 0)
+
         print("--- Running generation pipeline... ---")
         result = run_pipeline(args, progress=_cli_progress)
     except DocumentSourceError as exc:
@@ -312,6 +407,7 @@ def main() -> None:
         print(f"Recursive scan: {plan['recursive_docs']}")
         print(f"Estimated lessons: ~{plan['estimated_lessons']}")
         print(f"Estimated LLM calls: ~{plan['estimated_llm_calls']}")
+        print(f"Estimated runtime:   ~{plan.get('estimated_runtime_minutes', '?')} min")
         print(f"Model: {plan['model']}")
         print("Pipeline steps:")
         for step in plan["pipeline_steps"]:
@@ -351,6 +447,10 @@ def main() -> None:
         print(f"Anki deck (TSV):    {paths['anki_tsv']}")
     if paths.get("quizzes_csv"):
         print(f"Quizzes CSV:        {paths['quizzes_csv']}")
+    if paths.get("quizzes_gift"):
+        print(f"Moodle GIFT:        {paths['quizzes_gift']}")
+    if paths.get("output_index"):
+        print(f"Output index:       {paths['output_index']}")
     if paths.get("delivery_zip"):
         print(f"Delivery ZIP:       {paths['delivery_zip']}")
     if result.get("checkpoint"):
@@ -370,6 +470,25 @@ def main() -> None:
         if html_path.is_file():
             webbrowser.open(html_path.as_uri())
             print(f"Opened in browser: {html_path}")
+
+    audit_issues = audit_output_paths(paths)
+    if audit_issues:
+        print("\n(!) Output audit warnings:")
+        for issue in audit_issues:
+            print(f"  - {issue}")
+
+    if getattr(args, "json_result", False):
+        import json
+
+        payload = {
+            "ok": True,
+            "version": __version__,
+            "elapsed_seconds": result.get("elapsed_seconds"),
+            "quality": quality,
+            "paths": paths,
+            "checkpoint": result.get("checkpoint"),
+        }
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
 
     log_message(
         args.log_dir,

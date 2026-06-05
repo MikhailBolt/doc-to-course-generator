@@ -1,6 +1,6 @@
 # 📚 Doc-to-Course Generator
 
-**Version 1.5.0**
+**Version 1.7.0**
 
 Generate a structured **HTML training course** and **assessment quizzes** from documents using **local LLMs**, **RAG**, **FAISS**, and **Ollama**.
 
@@ -39,6 +39,14 @@ python main.py --version
 - **`course_full.md`** — full course text + quiz reference
 - **`flashcards_anki.txt`** — Anki import (TSV)
 - HTML course: **dark/light theme** toggle (saved in browser)
+- **`quizzes.gift`** — import quizzes into Moodle
+- **`OUTPUT_INDEX.md`** — guide to all generated files
+- **`--init-dirs`** / **`python -m course_generator`** — project bootstrap
+- **Lesson LLM retry** before fallback content
+- Streamlit: **search existing FAISS index** without full generation
+- **`--batch-dir`** — run multiple JSON configs sequentially (`batch_configs/`)
+- **`--check-embeddings`** / **`--diff-reports`** / **`--json-result`** for automation
+- Streamlit: list **saved checkpoints** for resume
 - **CLI presets** (`--preset quick|full|outline`)
 - **Recursive docs** (`--recursive-docs` / `DOCS_RECURSIVE` / Streamlit “Scan subfolders”)
 - Relative source labels in RAG for nested files (fewer name collisions)
@@ -123,6 +131,12 @@ python main.py --resume-checkpoint output/.checkpoints/default/checkpoint.json
 
 # Recent runs
 python main.py --list-runs
+
+# Batch: one run per JSON in batch_configs/
+python main.py --batch-dir batch_configs
+
+# Automation-friendly JSON summary
+python main.py --json-result
 ```
 
 ---

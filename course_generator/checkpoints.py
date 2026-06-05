@@ -39,6 +39,31 @@ def save_checkpoint(
     return str(path)
 
 
+def find_recent_checkpoints(output_dir: str, limit: int = 8) -> List[Dict[str, Any]]:
+    """List newest checkpoint.json files under output_dir/.checkpoints/."""
+    root = Path(output_dir) / ".checkpoints"
+    if not root.exists():
+        return []
+    candidates = sorted(root.rglob("checkpoint.json"), key=lambda p: p.stat().st_mtime, reverse=True)
+    rows: List[Dict[str, Any]] = []
+    for path in candidates[:limit]:
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            rows.append(
+                {
+                    "path": str(path),
+                    "stage": data.get("stage", ""),
+                    "lessons_completed": data.get("lessons_completed", 0),
+                    "model": data.get("model", ""),
+                    "generator_version": data.get("generator_version", ""),
+                }
+            )
+        except Exception:
+            continue
+    return rows
+
+
 def load_checkpoint(path: str) -> Dict[str, Any]:
     file_path = Path(path)
     if not file_path.is_file():

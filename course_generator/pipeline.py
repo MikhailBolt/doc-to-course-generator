@@ -19,6 +19,8 @@ from course_generator.generation import (
 from course_generator.html_export import build_course_html, build_full_course_markdown, build_markdown_summary
 from course_generator.preflight import require_ollama
 from course_generator.flashcards import build_flashcards, flashcards_to_anki_tsv
+from course_generator.gift_export import combined_gift_export
+from course_generator.output_index import build_output_index_markdown
 from course_generator.io import (
     load_outline_json,
     save_anki_tsv,
@@ -28,6 +30,8 @@ from course_generator.io import (
     save_flashcards_json,
     save_full_course_markdown,
     save_quizzes_csv,
+    save_quizzes_gift,
+    save_output_index,
     save_course_html,
     save_course_metadata,
     save_generation_report,
@@ -333,6 +337,13 @@ def run_pipeline(args: Namespace, progress: Optional[ProgressCallback] = None) -
         _notify(progress, "quiz_csv", "Exporting quizzes.csv")
         quizzes_csv_path = save_quizzes_csv(args.output_dir, pretest_data, quiz_data, args.output_prefix)
 
+    gift_path = ""
+    if getattr(args, "export_gift", True) and (pretest_data or quiz_data):
+        gift_text = combined_gift_export(pretest_data, quiz_data)
+        if gift_text.strip():
+            _notify(progress, "gift", "Exporting Moodle GIFT quizzes")
+            gift_path = save_quizzes_gift(args.output_dir, gift_text, args.output_prefix)
+
     elapsed = time.time() - started
     report_path = save_generation_report(
         args.output_dir,
@@ -370,11 +381,29 @@ def run_pipeline(args: Namespace, progress: Optional[ProgressCallback] = None) -
         paths["anki_tsv"] = anki_path
     if quizzes_csv_path:
         paths["quizzes_csv"] = quizzes_csv_path
+    if gift_path:
+        paths["quizzes_gift"] = gift_path
+
+    index_md = build_output_index_markdown(
+        paths,
+        course_title=str(outline.get("course_title", "")),
+        quality=quality,
+        elapsed_seconds=elapsed,
+    )
+    index_path = save_output_index(args.output_dir, index_md, args.output_prefix)
+    paths["output_index"] = index_path
 
     zip_path = ""
     if not getattr(args, "no_delivery_zip", False):
         _notify(progress, "zip", "Packaging delivery ZIP")
-        zip_path = create_delivery_zip(paths, args.output_dir, args.output_prefix)
+        zip_path = create_delivery_zip(
+            paths,
+            args.output_dir,
+            args.output_prefix,
+            course_title=str(outline.get("course_title", "")),
+            quality=quality,
+            elapsed_seconds=elapsed,
+        )
         paths["delivery_zip"] = zip_path
 
     checkpoint_path = _save_checkpoint_if_enabled(args, outline, lesson_payloads, outline_rag_used, "complete") or checkpoint_path

@@ -58,6 +58,22 @@ def check_ollama(model: str, timeout: float = 5.0) -> Dict[str, Any]:
         }
 
 
+def check_embeddings(model: str) -> Dict[str, Any]:
+    """Verify the embedding model loads and returns a vector (may download on first run)."""
+    try:
+        from langchain_huggingface import HuggingFaceEmbeddings
+
+        embeddings = HuggingFaceEmbeddings(model_name=model)
+        vector = embeddings.embed_query("health check")
+        return {
+            "ok": True,
+            "model": model,
+            "dimensions": len(vector) if isinstance(vector, list) else 0,
+        }
+    except Exception as exc:
+        return {"ok": False, "model": model, "error": str(exc)}
+
+
 def format_ollama_message(info: Dict[str, Any]) -> str:
     """Human-readable Ollama status for CLI, Streamlit, and pipeline errors."""
     host = info.get("host", ollama_base_url())

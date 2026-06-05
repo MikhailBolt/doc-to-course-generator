@@ -302,31 +302,42 @@ Requirements for lesson_html:
 CONTEXT:
 {context_text}
 """
-    try:
-        data = retry_llm_json(llm, prompt)
-        if not isinstance(data, dict):
-            raise ValueError("Lesson JSON is not an object.")
-        lesson_html = sanitize_lesson_html(str(data.get("lesson_html", "")).strip())
-        summary = str(data.get("summary", "")).strip()
-        key_takeaways = data.get("key_takeaways", [])
-        if not lesson_html:
-            raise ValueError("Empty lesson HTML.")
-        if not isinstance(key_takeaways, list):
-            key_takeaways = []
-        return {
-            "lesson_html": lesson_html,
-            "summary": summary or lesson_goal,
-            "key_takeaways": [str(x).strip() for x in key_takeaways if str(x).strip()][:5],
-            "sources": deduplicate_sources(sources),
-            "source_excerpts": source_excerpts[: min(3, len(source_excerpts))] if include_source_excerpts else [],
-            "generation_mode": "llm",
-        }
-    except Exception:
-        fallback = fallback_lesson_html(lesson_title, lesson_goal, key_points, retrieved_docs)
-        fallback["sources"] = deduplicate_sources(sources)
-        fallback["source_excerpts"] = source_excerpts[: min(3, len(source_excerpts))] if include_source_excerpts else []
-        fallback["generation_mode"] = "fallback"
-        return fallback
+    retry_prompt = (
+        f"Return ONLY valid JSON for one lesson section. Language: {get_language_instruction(language)}\n"
+        f'Title: {lesson_title}\nGoal: {lesson_goal}\n'
+        f'Schema: {{"lesson_html": "<section class=\\"lesson-section\\">...</section>", '
+        f'"summary": "string", "key_takeaways": ["string"]}}\n'
+        f"Use the context below.\n\nCONTEXT:\n{context_text[:4000]}"
+    )
+
+    for attempt in range(2):
+        try:
+            data = retry_llm_json(llm, prompt if attempt == 0 else retry_prompt, max_attempts=2)
+            if not isinstance(data, dict):
+                raise ValueError("Lesson JSON is not an object.")
+            lesson_html = sanitize_lesson_html(str(data.get("lesson_html", "")).strip())
+            summary = str(data.get("summary", "")).strip()
+            key_takeaways = data.get("key_takeaways", [])
+            if not lesson_html:
+                raise ValueError("Empty lesson HTML.")
+            if not isinstance(key_takeaways, list):
+                key_takeaways = []
+            return {
+                "lesson_html": lesson_html,
+                "summary": summary or lesson_goal,
+                "key_takeaways": [str(x).strip() for x in key_takeaways if str(x).strip()][:5],
+                "sources": deduplicate_sources(sources),
+                "source_excerpts": source_excerpts[: min(3, len(source_excerpts))] if include_source_excerpts else [],
+                "generation_mode": "llm" if attempt == 0 else "llm_retry",
+            }
+        except Exception:
+            continue
+
+    fallback = fallback_lesson_html(lesson_title, lesson_goal, key_points, retrieved_docs)
+    fallback["sources"] = deduplicate_sources(sources)
+    fallback["source_excerpts"] = source_excerpts[: min(3, len(source_excerpts))] if include_source_excerpts else []
+    fallback["generation_mode"] = "fallback"
+    return fallback
 
 
 def generate_pretest(llm: OllamaLLM, outline: Dict[str, Any], pretest_questions: int, difficulty: str, language: str) -> List[Dict[str, Any]]:
