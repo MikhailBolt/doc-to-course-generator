@@ -34,6 +34,7 @@ from course_generator.constants import (
 from course_generator.config_loader import CONFIG_KEYS, apply_config_file
 from course_generator.scaffold import init_project_directories
 from course_generator.audit import audit_output_paths
+from course_generator.inspect_docs import build_documents_report
 from course_generator.batch import run_batch
 from course_generator.health import check_embeddings, check_ollama, format_ollama_message, list_ollama_models
 from course_generator.report_diff import diff_generation_reports
@@ -228,6 +229,22 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Compare two generation_report.json files and exit.",
     )
+    parser.add_argument(
+        "--inspect-docs",
+        action="store_true",
+        help="List source documents (sizes, types) without building index or calling LLM.",
+    )
+    parser.add_argument(
+        "--regenerate-fallback",
+        action="store_true",
+        help="After lesson generation, retry any lessons that used fallback content.",
+    )
+    parser.add_argument(
+        "--min-quality-score",
+        type=int,
+        default=int(os.getenv("MIN_QUALITY_SCORE", "0")),
+        help="Exit with code 2 if quality score is below this threshold (0 = disabled).",
+    )
     return parser
 
 
@@ -335,6 +352,21 @@ def main() -> None:
             print(f"(X) Embedding model failed: {info.get('error', 'unknown')}")
             sys.exit(1)
         print(f"[OK] Embedding model '{args.embedding_model}' loaded ({info.get('dimensions', '?')} dims).")
+        sys.exit(0)
+
+    if args.inspect_docs:
+        import json
+
+        try:
+            report = build_documents_report(
+                args.docs_path,
+                recursive=bool(getattr(args, "recursive_docs", False)),
+                max_files=getattr(args, "max_files", None),
+            )
+        except DocumentSourceError as exc:
+            print(f"(X) {exc}")
+            sys.exit(1)
+        print(json.dumps(report, ensure_ascii=False, indent=2))
         sys.exit(0)
 
     if args.diff_reports:
@@ -451,6 +483,8 @@ def main() -> None:
         print(f"Moodle GIFT:        {paths['quizzes_gift']}")
     if paths.get("output_index"):
         print(f"Output index:       {paths['output_index']}")
+    if paths.get("run_manifest"):
+        print(f"Run manifest:       {paths['run_manifest']}")
     if paths.get("delivery_zip"):
         print(f"Delivery ZIP:       {paths['delivery_zip']}")
     if result.get("checkpoint"):
@@ -470,6 +504,13 @@ def main() -> None:
         if html_path.is_file():
             webbrowser.open(html_path.as_uri())
             print(f"Opened in browser: {html_path}")
+
+    min_q = int(getattr(args, "min_quality_score", 0) or 0)
+    if min_q > 0 and quality:
+        score = int(quality.get("overall_score", 0))
+        if score < min_q:
+            print(f"\n(X) Quality score {score} is below minimum {min_q}.")
+            sys.exit(2)
 
     audit_issues = audit_output_paths(paths)
     if audit_issues:

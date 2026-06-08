@@ -1,6 +1,6 @@
 """Doc-to-Course Generator: RAG + local LLM pipeline for HTML courses and quizzes."""
 
-__version__ = "1.7.0"
+__version__ = "1.8.0"
 
 from course_generator.cli import main
 

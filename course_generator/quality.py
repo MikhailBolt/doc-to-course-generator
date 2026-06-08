@@ -169,7 +169,9 @@ def compute_quality_score(
     if lesson_payloads:
         with_sources = sum(1 for p in lesson_payloads if p.get("sources"))
         src_ratio = with_sources / len(lesson_payloads)
-        llm_count = sum(1 for p in lesson_payloads if p.get("generation_mode") in ("llm", "llm_retry"))
+        llm_count = sum(
+            1 for p in lesson_payloads if p.get("generation_mode") in ("llm", "llm_retry")
+        )
         llm_ratio = llm_count / len(lesson_payloads)
         add(
             "lesson_sources",

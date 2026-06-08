@@ -32,6 +32,7 @@ from course_generator.io import (
     save_quizzes_csv,
     save_quizzes_gift,
     save_output_index,
+    save_run_manifest,
     save_course_html,
     save_course_metadata,
     save_generation_report,
@@ -161,6 +162,41 @@ def _generate_lessons(
     return lesson_payloads
 
 
+def _regenerate_fallback_lessons(
+    args: Namespace,
+    llm: OllamaLLM,
+    vectorstore: Any,
+    outline: Dict[str, Any],
+    lesson_payloads: List[Dict[str, Any]],
+    progress: Optional[ProgressCallback],
+    *,
+    outline_rag_used: bool = False,
+) -> List[Dict[str, Any]]:
+    lessons = outline.get("lessons", [])
+    for idx, payload in enumerate(lesson_payloads):
+        if payload.get("generation_mode") not in {"fallback"}:
+            continue
+        if idx >= len(lessons):
+            continue
+        lesson = lessons[idx]
+        lesson_title = str(lesson.get("title", f"Lesson {idx + 1}")).strip()
+        lesson_goal = str(lesson.get("goal", "")).strip()
+        key_points = lesson.get("key_points", []) if isinstance(lesson.get("key_points", []), list) else []
+        _notify(progress, "lesson_retry", f"{idx + 1}: {lesson_title} (fallback retry)")
+        retrieved_docs = retrieve_lesson_context(vectorstore, lesson_title, key_points, args.top_k, args.retrieval_type)
+        lesson_payloads[idx] = generate_lesson_html_section(
+            llm,
+            lesson_title,
+            lesson_goal,
+            key_points,
+            retrieved_docs,
+            args.language,
+            args.include_source_excerpts,
+        )
+        _save_checkpoint_if_enabled(args, outline, lesson_payloads, outline_rag_used, "lessons")
+    return lesson_payloads
+
+
 def run_pipeline(args: Namespace, progress: Optional[ProgressCallback] = None) -> Dict[str, Any]:
     """
     Run the generation pipeline and return paths + artifacts.
@@ -262,6 +298,14 @@ def run_pipeline(args: Namespace, progress: Optional[ProgressCallback] = None) -
         outline_rag_used=outline_rag_used,
     )
     checkpoint_path = _save_checkpoint_if_enabled(args, outline, lesson_payloads, outline_rag_used, "lessons") or checkpoint_path
+
+    if getattr(args, "regenerate_fallback", False):
+        before = sum(1 for p in lesson_payloads if p.get("generation_mode") == "fallback")
+        if before:
+            _notify(progress, "fallback_retry", f"Regenerating {before} fallback lesson(s)")
+            lesson_payloads = _regenerate_fallback_lessons(
+                args, llm, vectorstore, outline, lesson_payloads, progress, outline_rag_used=outline_rag_used
+            )
 
     pretest_data: List[Dict[str, Any]] = []
     if not args.skip_pretest:
@@ -392,6 +436,26 @@ def run_pipeline(args: Namespace, progress: Optional[ProgressCallback] = None) -
     )
     index_path = save_output_index(args.output_dir, index_md, args.output_prefix)
     paths["output_index"] = index_path
+
+    from course_generator import __version__
+
+    manifest_path = save_run_manifest(
+        args.output_dir,
+        {
+            "generator_version": __version__,
+            "course_title": outline.get("course_title", ""),
+            "elapsed_seconds": round(elapsed, 2),
+            "quality_score": quality.get("overall_score"),
+            "grade": quality.get("grade"),
+            "lessons_count": len(outline.get("lessons", [])),
+            "lessons_fallback_count": sum(
+                1 for p in lesson_payloads if p.get("generation_mode") == "fallback"
+            ),
+            "paths": paths,
+        },
+        args.output_prefix,
+    )
+    paths["run_manifest"] = manifest_path
 
     zip_path = ""
     if not getattr(args, "no_delivery_zip", False):

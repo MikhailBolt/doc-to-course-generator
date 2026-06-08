@@ -210,7 +210,12 @@ def build_course_html(
         "ai_generated_course": "Курс, сгенерированный ИИ" if is_ru else "AI-generated course",
         "from_source_docs": "Курс создан на основе исходных документов" if is_ru else "AI-generated course from source documents",
         "score": "Результат" if is_ru else "Score",
+        "course_progress": "Прогресс курса" if is_ru else "Course progress",
+        "search_placeholder": "Поиск по курсу…" if is_ru else "Search course…",
+        "complete": "пройдено" if is_ru else "complete",
     }
+
+    course_slug = re.sub(r"[^a-zA-Z0-9_-]+", "_", outline.get("course_title", "course"))[:48].strip("_") or "course"
 
     course_title = html.escape(outline.get("course_title", "Generated Course"))
     course_description = html.escape(outline.get("course_description", ""))
@@ -234,7 +239,12 @@ def build_course_html(
         toc_items.append(f'<li><a href="#pretest">{labels["pretest"]}</a></li>')
     for i, lesson in enumerate(outline.get("lessons", []), start=1):
         title = html.escape(lesson.get("title", f"Lesson {i}"))
-        toc_items.append(f'<li><a href="#lesson-{i}">{title}</a></li>')
+        toc_items.append(
+            f'<li class="lesson-toc-item">'
+            f'<label class="lesson-toc-label">'
+            f'<input type="checkbox" class="lesson-done" data-lesson="{i}" /> '
+            f'<a href="#lesson-{i}">{title}</a></label></li>'
+        )
     toc_items.append(f'<li><a href="#glossary">{labels["glossary"]}</a></li>')
     if final_quiz_data:
         toc_items.append(f'<li><a href="#final-quiz">{labels["final_quiz"]}</a></li>')
@@ -364,6 +374,14 @@ def build_course_html(
     .back-to-top {{ position:fixed; right:24px; bottom:24px; z-index:20; background:var(--primary); color:#fff; padding:10px 14px; border-radius:999px; text-decoration:none; font-size:0.9rem; box-shadow:var(--shadow); }}
     .back-to-top:hover {{ filter:brightness(1.08); }}
     .theme-toggle {{ margin-top:16px; width:100%; border:1px solid #334155; background:#1e293b; color:#e2e8f0; padding:8px 12px; border-radius:10px; cursor:pointer; font-size:0.85rem; }}
+    .sidebar-search {{ width:100%; margin:12px 0; padding:8px 10px; border-radius:10px; border:1px solid #334155; background:#0f172a; color:#e2e8f0; }}
+    .course-progress-box {{ margin:14px 0; }}
+    .course-progress-label {{ font-size:0.85rem; color:#cbd5e1; margin-top:6px; }}
+    .lesson-toc-label {{ display:flex; align-items:flex-start; gap:8px; cursor:pointer; }}
+    .lesson-toc-label a.done {{ text-decoration:line-through; opacity:0.65; }}
+    .lesson-section.search-hidden {{ display:none; }}
+    .search-hit {{ background:#fef08a; color:#111; padding:0 2px; border-radius:2px; }}
+    body.theme-dark .search-hit {{ background:#854d0e; color:#fef9c3; }}
     body.theme-dark {{ --panel:#1e293b; --text:#e2e8f0; --muted:#94a3b8; --line:#334155; --primary-soft:#1e3a5f; background:#0b1120; }}
     body.theme-dark .hero h1, body.theme-dark h2, body.theme-dark h3, body.theme-dark .stat-value {{ color:#f1f5f9; }}
     body.theme-dark .card, body.theme-dark .lesson-section, body.theme-dark .stat, body.theme-dark .quiz-card, body.theme-dark .glossary-item {{ background:#1e293b; color:#e2e8f0; }}
@@ -385,6 +403,12 @@ def build_course_html(
     <aside class="sidebar">
       <h2>{course_title}</h2>
       <p>{labels['from_source_docs']}</p>
+      <input type="search" class="sidebar-search" id="course-search" placeholder="{html.escape(labels['search_placeholder'])}" />
+      <div class="course-progress-box">
+        <div class="muted" style="font-size:0.85rem;">{html.escape(labels['course_progress'])}</div>
+        <div class="progress-wrap"><div class="progress-bar" id="course-progress-bar"></div></div>
+        <div class="course-progress-label" id="course-progress-label">0% {html.escape(labels['complete'])}</div>
+      </div>
       <ol>{toc_html}</ol>
       <button type="button" class="theme-toggle" id="theme-toggle" onclick="toggleTheme()">🌙 Dark</button>
     </aside>
@@ -417,6 +441,8 @@ def build_course_html(
   <script>
     const SCORE_LABEL = {json.dumps(labels['score'])};
     const THEME_KEY = 'dtcg-theme';
+    const PROGRESS_KEY = 'dtcg-progress-' + {json.dumps(course_slug)};
+    const LESSON_COUNT = {lesson_count};
     function applyTheme(mode) {{
       document.body.classList.toggle('theme-dark', mode === 'dark');
       const btn = document.getElementById('theme-toggle');
@@ -437,6 +463,51 @@ def build_course_html(
     function resetQuiz(prefix) {{ const cards = getQuizCards(prefix); cards.forEach(card => {{ card.querySelectorAll('input[type="radio"]').forEach(input => input.checked = false); card.querySelectorAll('.quiz-option').forEach(opt => opt.classList.remove('correct','incorrect')); }}); const results = document.getElementById(`${{prefix}}-results`); if (results) {{ results.style.display = 'none'; results.innerHTML = ''; }} updateProgress(prefix); }}
     document.addEventListener('change', (event) => {{ const target = event.target; if (target.matches('input[type="radio"]')) {{ const name = target.name || ''; if (name.startsWith('pretest-')) updateProgress('pretest'); if (name.startsWith('final-')) updateProgress('final'); }} }});
     updateProgress('pretest'); updateProgress('final');
+    function loadLessonProgress() {{
+      try {{ return JSON.parse(localStorage.getItem(PROGRESS_KEY) || '{{}}'); }} catch (e) {{ return {{}}; }}
+    }}
+    function saveLessonProgress(state) {{
+      try {{ localStorage.setItem(PROGRESS_KEY, JSON.stringify(state)); }} catch (e) {{}}
+    }}
+    function updateCourseProgress() {{
+      const state = loadLessonProgress();
+      const done = Object.values(state).filter(Boolean).length;
+      const total = LESSON_COUNT || 1;
+      const pct = Math.round((done / total) * 100);
+      const bar = document.getElementById('course-progress-bar');
+      const label = document.getElementById('course-progress-label');
+      if (bar) bar.style.width = pct + '%';
+      if (label) label.textContent = pct + '% ' + {json.dumps(labels['complete'])};
+    }}
+    document.querySelectorAll('.lesson-done').forEach(box => {{
+      const id = box.getAttribute('data-lesson');
+      const state = loadLessonProgress();
+      if (state[id]) {{
+        box.checked = true;
+        const link = box.parentElement && box.parentElement.querySelector('a');
+        if (link) link.classList.add('done');
+      }}
+      box.addEventListener('change', () => {{
+        const s = loadLessonProgress();
+        s[id] = box.checked;
+        saveLessonProgress(s);
+        const link = box.parentElement && box.parentElement.querySelector('a');
+        if (link) link.classList.toggle('done', box.checked);
+        updateCourseProgress();
+      }});
+    }});
+    updateCourseProgress();
+    (function initCourseSearch() {{
+      const input = document.getElementById('course-search');
+      if (!input) return;
+      input.addEventListener('input', () => {{
+        const q = input.value.trim().toLowerCase();
+        document.querySelectorAll('.lesson-section').forEach(section => {{
+          const text = section.textContent.toLowerCase();
+          section.classList.toggle('search-hidden', q.length > 0 && !text.includes(q));
+        }});
+      }});
+    }})();
     (function initScrollSpy() {{
       const navLinks = Array.from(document.querySelectorAll('.sidebar a[href^="#"]'));
       const sections = navLinks.map(link => document.querySelector(link.getAttribute('href'))).filter(Boolean);

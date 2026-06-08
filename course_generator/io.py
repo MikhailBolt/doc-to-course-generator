@@ -81,6 +81,10 @@ def save_output_index(output_dir: str, markdown_text: str, output_prefix: str = 
     return save_text(build_output_path(output_dir, "OUTPUT_INDEX.md", output_prefix), markdown_text)
 
 
+def save_run_manifest(output_dir: str, payload: Dict[str, Any], output_prefix: str = "") -> str:
+    return save_json(build_output_path(output_dir, "run_manifest.json", output_prefix), payload)
+
+
 def save_course_docx(output_dir: str, markdown_text: str, output_prefix: str = "") -> str:
     from course_generator.docx_export import export_markdown_to_docx
 

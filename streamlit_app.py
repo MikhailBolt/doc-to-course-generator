@@ -91,6 +91,7 @@ def _make_args(
     export_quiz_csv: bool,
     export_flashcards: bool,
     export_gift: bool,
+    regenerate_fallback: bool,
     max_files: int,
 ) -> Namespace:
     return Namespace(
@@ -136,6 +137,7 @@ def _make_args(
         export_quiz_csv=export_quiz_csv,
         export_flashcards=export_flashcards,
         export_gift=export_gift,
+        regenerate_fallback=regenerate_fallback,
         max_files=max_files if max_files > 0 else None,
     )
 
@@ -341,6 +343,7 @@ def main() -> None:
         export_quiz_csv = st.checkbox("Export quizzes.csv", value=True)
         export_flashcards = st.checkbox("Export flashcards.json", value=True)
         export_gift = st.checkbox("Export Moodle GIFT (quizzes.gift)", value=True)
+        regenerate_fallback = st.checkbox("Retry fallback lessons", value=False)
 
         run_btn = st.button("Generate", type="primary", use_container_width=True)
 
@@ -443,6 +446,7 @@ def main() -> None:
         export_quiz_csv=bool(export_quiz_csv),
         export_flashcards=bool(export_flashcards),
         export_gift=bool(export_gift),
+        regenerate_fallback=bool(regenerate_fallback),
         max_files=int(max_files),
     )
 
@@ -591,6 +595,7 @@ def main() -> None:
             ("Quizzes (CSV)", "quizzes_csv", "text/csv"),
             ("Moodle GIFT", "quizzes_gift", "text/plain"),
             ("Output index", "output_index", "text/markdown"),
+            ("Run manifest", "run_manifest", "application/json"),
         ]:
             p = paths.get(key)
             if p and Path(p).exists():

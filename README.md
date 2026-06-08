@@ -1,6 +1,6 @@
 # 📚 Doc-to-Course Generator
 
-**Version 1.7.0**
+**Version 1.8.0**
 
 Generate a structured **HTML training course** and **assessment quizzes** from documents using **local LLMs**, **RAG**, **FAISS**, and **Ollama**.
 
@@ -47,6 +47,11 @@ python main.py --version
 - **`--batch-dir`** — run multiple JSON configs sequentially (`batch_configs/`)
 - **`--check-embeddings`** / **`--diff-reports`** / **`--json-result`** for automation
 - Streamlit: list **saved checkpoints** for resume
+- **`--inspect-docs`** — document inventory without LLM
+- **`--regenerate-fallback`** — retry thin/fallback lessons
+- **`--min-quality-score`** — CI quality gate (exit code 2)
+- HTML: **lesson progress** + **search** (saved in browser)
+- **`run_manifest.json`** — compact run summary
 - **CLI presets** (`--preset quick|full|outline`)
 - **Recursive docs** (`--recursive-docs` / `DOCS_RECURSIVE` / Streamlit “Scan subfolders”)
 - Relative source labels in RAG for nested files (fewer name collisions)

@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.8.0] — 2026-05-29
+
+### Added
+- `--inspect-docs` document inventory (JSON)
+- `--regenerate-fallback` to retry lessons that used fallback HTML
+- `--min-quality-score` quality gate for CI (exit code 2)
+- `run_manifest.json` compact run summary
+- HTML course: lesson checkboxes, progress bar, in-page search (localStorage)
+
 ## [1.7.0] — 2026-05-29
 
 ### Added
