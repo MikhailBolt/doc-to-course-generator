@@ -253,7 +253,17 @@ def build_course_html(
     lesson_sections = []
     for i, payload in enumerate(lesson_payloads, start=1):
         raw_section = payload["lesson_html"]
-        section_with_anchor = raw_section.replace('<section class="lesson-section">', f'<section class="lesson-section" id="lesson-{i}">', 1)
+        section_with_anchor = raw_section.replace(
+            '<section class="lesson-section">',
+            f'<section class="lesson-section" id="lesson-{i}" data-lesson-id="lesson-{i}">',
+            1,
+        )
+        if "<h2>" in section_with_anchor:
+            section_with_anchor = section_with_anchor.replace(
+                "<h2>",
+                f'<button type="button" class="copy-link" onclick="copyLessonLink(\'lesson-{i}\')">#</button><h2>',
+                1,
+            )
 
         sources = payload.get("sources", [])
         source_items = "\n".join(
@@ -381,6 +391,7 @@ def build_course_html(
     .lesson-toc-label a.done {{ text-decoration:line-through; opacity:0.65; }}
     .lesson-section.search-hidden {{ display:none; }}
     .search-hit {{ background:#fef08a; color:#111; padding:0 2px; border-radius:2px; }}
+    .copy-link {{ margin-left:8px; font-size:0.8rem; color:var(--primary); cursor:pointer; border:0; background:transparent; text-decoration:underline; }}
     body.theme-dark .search-hit {{ background:#854d0e; color:#fef9c3; }}
     body.theme-dark {{ --panel:#1e293b; --text:#e2e8f0; --muted:#94a3b8; --line:#334155; --primary-soft:#1e3a5f; background:#0b1120; }}
     body.theme-dark .hero h1, body.theme-dark h2, body.theme-dark h3, body.theme-dark .stat-value {{ color:#f1f5f9; }}
@@ -463,6 +474,12 @@ def build_course_html(
     function resetQuiz(prefix) {{ const cards = getQuizCards(prefix); cards.forEach(card => {{ card.querySelectorAll('input[type="radio"]').forEach(input => input.checked = false); card.querySelectorAll('.quiz-option').forEach(opt => opt.classList.remove('correct','incorrect')); }}); const results = document.getElementById(`${{prefix}}-results`); if (results) {{ results.style.display = 'none'; results.innerHTML = ''; }} updateProgress(prefix); }}
     document.addEventListener('change', (event) => {{ const target = event.target; if (target.matches('input[type="radio"]')) {{ const name = target.name || ''; if (name.startsWith('pretest-')) updateProgress('pretest'); if (name.startsWith('final-')) updateProgress('final'); }} }});
     updateProgress('pretest'); updateProgress('final');
+    function copyLessonLink(id) {{
+      const url = window.location.href.split('#')[0] + '#' + id;
+      if (navigator.clipboard && navigator.clipboard.writeText) {{
+        navigator.clipboard.writeText(url).catch(() => {{}});
+      }}
+    }}
     function loadLessonProgress() {{
       try {{ return JSON.parse(localStorage.getItem(PROGRESS_KEY) || '{{}}'); }} catch (e) {{ return {{}}; }}
     }}

@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "doc-to-course-generator"
+version = "1.9.0"
+description = "Generate HTML training courses and quizzes from documents using local LLM + RAG"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+    "langchain==1.2.14",
+    "langchain-community==0.4.1",
+    "langchain-text-splitters==1.1.1",
+    "langchain-huggingface==1.2.1",
+    "langchain-ollama==1.0.1",
+    "faiss-cpu==1.13.2",
+    "sentence-transformers==5.3.0",
+    "pypdf==6.9.2",
+    "python-dotenv==1.2.2",
+    "streamlit==1.49.0",
+    "python-docx==1.1.2",
+    "reportlab==4.4.1",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
+[project.scripts]
+doc-to-course = "course_generator.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["course_generator*"]

@@ -34,6 +34,7 @@ from course_generator.constants import (
 from course_generator.config_loader import CONFIG_KEYS, apply_config_file
 from course_generator.scaffold import init_project_directories
 from course_generator.audit import audit_output_paths
+from course_generator.bundle_io import validate_bundle_file
 from course_generator.inspect_docs import build_documents_report
 from course_generator.batch import run_batch
 from course_generator.health import check_embeddings, check_ollama, format_ollama_message, list_ollama_models
@@ -245,6 +246,29 @@ def build_parser() -> argparse.ArgumentParser:
         default=int(os.getenv("MIN_QUALITY_SCORE", "0")),
         help="Exit with code 2 if quality score is below this threshold (0 = disabled).",
     )
+    parser.add_argument(
+        "--from-bundle",
+        metavar="PATH",
+        default=None,
+        help="Load outline/lessons/quizzes from course_bundle.json.",
+    )
+    parser.add_argument(
+        "--artifacts-only",
+        action="store_true",
+        help="Rebuild HTML/exports from --from-bundle without calling the LLM.",
+    )
+    parser.add_argument(
+        "--regenerate-lessons",
+        metavar="N,N",
+        default=None,
+        help="Comma-separated 1-based lesson numbers to regenerate (e.g. 2,4).",
+    )
+    parser.add_argument(
+        "--validate-bundle",
+        metavar="PATH",
+        default=None,
+        help="Validate a course_bundle.json file and exit.",
+    )
     return parser
 
 
@@ -295,6 +319,17 @@ def main() -> None:
 
         payload = {k: getattr(args, k) for k in sorted(CONFIG_KEYS) if hasattr(args, k)}
         print(json.dumps(payload, ensure_ascii=False, indent=2, default=str))
+        sys.exit(0)
+
+    if args.validate_bundle:
+        import json
+
+        try:
+            summary = validate_bundle_file(args.validate_bundle)
+        except Exception as exc:
+            print(f"(X) Invalid bundle: {exc}")
+            sys.exit(1)
+        print(json.dumps(summary, ensure_ascii=False, indent=2))
         sys.exit(0)
 
     if args.validate_outline:
@@ -400,6 +435,12 @@ def main() -> None:
         sys.exit(1)
     if getattr(args, "resume_checkpoint", None) and getattr(args, "outline_only", False):
         print("(X) Use either --resume-checkpoint or --outline-only, not both.")
+        sys.exit(1)
+    if getattr(args, "from_bundle", None) and getattr(args, "from_outline", None):
+        print("(X) Use either --from-bundle or --from-outline, not both.")
+        sys.exit(1)
+    if getattr(args, "artifacts_only", False) and not getattr(args, "from_bundle", None):
+        print("(X) --artifacts-only requires --from-bundle.")
         sys.exit(1)
 
     log_message(args.log_dir, "Starting course and quiz generation pipeline")

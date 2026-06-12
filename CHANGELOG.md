@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.9.0] — 2026-05-29
+
+### Added
+- **`--from-bundle`** — continue or rebuild from `course_bundle.json`
+- **`--artifacts-only`** — re-export HTML/ZIP from bundle (no LLM)
+- **`--regenerate-lessons`** — regenerate selected lessons by number
+- **`--validate-bundle`** — validate bundle JSON
+- **`pyproject.toml`** — `pip install -e .` and `doc-to-course` entry point
+- HTML: **#** copy-link buttons on lesson headings
+
+### Changed
+- Export/save logic consolidated in `export_phase.py`
+
 ## [1.8.0] — 2026-05-29
 
 ### Added

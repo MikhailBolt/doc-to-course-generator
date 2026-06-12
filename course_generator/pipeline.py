@@ -5,7 +5,9 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from langchain_ollama import OllamaLLM
 
+from course_generator.bundle_io import load_bundle_json, parse_lesson_indices
 from course_generator.checkpoints import checkpoint_path_for_args, load_checkpoint, save_checkpoint
+from course_generator.export_phase import run_export_phase
 
 from course_generator.documents import DocCollection, collect_source_files, get_combined_preview_text
 from course_generator.generation import (
@@ -197,6 +199,43 @@ def _regenerate_fallback_lessons(
     return lesson_payloads
 
 
+def _regenerate_lesson_indices(
+    args: Namespace,
+    llm: OllamaLLM,
+    vectorstore: Any,
+    outline: Dict[str, Any],
+    lesson_payloads: List[Dict[str, Any]],
+    indices: List[int],
+    progress: Optional[ProgressCallback],
+    *,
+    outline_rag_used: bool = False,
+) -> List[Dict[str, Any]]:
+    lessons = outline.get("lessons", [])
+    while len(lesson_payloads) < len(lessons):
+        lesson_payloads.append({})
+    for one_based in indices:
+        idx = one_based - 1
+        if idx < 0 or idx >= len(lessons):
+            continue
+        lesson = lessons[idx]
+        lesson_title = str(lesson.get("title", f"Lesson {one_based}")).strip()
+        lesson_goal = str(lesson.get("goal", "")).strip()
+        key_points = lesson.get("key_points", []) if isinstance(lesson.get("key_points", []), list) else []
+        _notify(progress, "lesson_regen", f"{one_based}: {lesson_title}")
+        retrieved_docs = retrieve_lesson_context(vectorstore, lesson_title, key_points, args.top_k, args.retrieval_type)
+        lesson_payloads[idx] = generate_lesson_html_section(
+            llm,
+            lesson_title,
+            lesson_goal,
+            key_points,
+            retrieved_docs,
+            args.language,
+            args.include_source_excerpts,
+        )
+        _save_checkpoint_if_enabled(args, outline, lesson_payloads, outline_rag_used, "lessons")
+    return lesson_payloads
+
+
 def run_pipeline(args: Namespace, progress: Optional[ProgressCallback] = None) -> Dict[str, Any]:
     """
     Run the generation pipeline and return paths + artifacts.
@@ -207,8 +246,29 @@ def run_pipeline(args: Namespace, progress: Optional[ProgressCallback] = None) -
     - from_outline: load outline JSON path instead of generating one.
     - checkpoint: save progress after outline and each lesson.
     - resume_checkpoint: continue lessons from a checkpoint file.
+    - from_bundle: load outline/lessons/quizzes from course_bundle.json.
+    - artifacts_only: rebuild exports from bundle without LLM calls.
     """
     started = time.time()
+
+    from_bundle_path = getattr(args, "from_bundle", None) or None
+    if getattr(args, "artifacts_only", False):
+        if not from_bundle_path:
+            raise ValueError("--artifacts-only requires --from-bundle")
+        bundle = load_bundle_json(from_bundle_path)
+        _notify(progress, "artifacts_only", "Rebuilding exports from bundle (no LLM)")
+        return run_export_phase(
+            args,
+            outline=bundle["outline"],
+            lesson_payloads=bundle.get("lessons", []),
+            docs_info=bundle.get("documents", []),
+            pretest_data=bundle.get("pretest", []),
+            quiz_data=bundle.get("final_quiz", []),
+            outline_rag_used=False,
+            llm=None,
+            progress=progress,
+            started=started,
+        )
 
     _notify(progress, "load_documents", "Collecting source files")
     max_files = getattr(args, "max_files", None) or None
@@ -244,10 +304,22 @@ def run_pipeline(args: Namespace, progress: Optional[ProgressCallback] = None) -
     resume_path = getattr(args, "resume_checkpoint", None) or None
     outline_rag_used = False
     initial_lessons: List[Dict[str, Any]] = []
+    bundle_pretest: List[Dict[str, Any]] = []
+    bundle_quiz: List[Dict[str, Any]] = []
     llm: Optional[OllamaLLM] = None
     checkpoint_path = ""
 
-    if resume_path:
+    if from_bundle_path:
+        _notify(progress, "bundle", f"Loading bundle from {from_bundle_path}")
+        bundle = load_bundle_json(from_bundle_path)
+        outline = bundle["outline"]
+        initial_lessons = list(bundle.get("lessons", []))
+        bundle_pretest = list(bundle.get("pretest", []))
+        bundle_quiz = list(bundle.get("final_quiz", []))
+        if bundle.get("documents"):
+            docs_info = bundle["documents"]
+        _notify(progress, "bundle", f"{len(initial_lessons)} lesson payload(s) loaded from bundle")
+    elif resume_path:
         _notify(progress, "checkpoint", f"Resuming from {resume_path}")
         cp = load_checkpoint(resume_path)
         outline = cp["outline"]
@@ -307,13 +379,31 @@ def run_pipeline(args: Namespace, progress: Optional[ProgressCallback] = None) -
                 args, llm, vectorstore, outline, lesson_payloads, progress, outline_rag_used=outline_rag_used
             )
 
+    regen_indices = parse_lesson_indices(getattr(args, "regenerate_lessons", None))
+    if regen_indices:
+        _notify(progress, "lesson_regen", f"Regenerating lesson(s): {regen_indices}")
+        lesson_payloads = _regenerate_lesson_indices(
+            args,
+            llm,
+            vectorstore,
+            outline,
+            lesson_payloads,
+            regen_indices,
+            progress,
+            outline_rag_used=outline_rag_used,
+        )
+
     pretest_data: List[Dict[str, Any]] = []
-    if not args.skip_pretest:
+    if bundle_pretest and not args.skip_pretest:
+        pretest_data = bundle_pretest
+    elif not args.skip_pretest:
         _notify(progress, "pretest", "Generating diagnostic pre-test")
         pretest_data = generate_pretest(llm, outline, args.pretest_questions, args.difficulty, args.language)
 
     quiz_data: List[Dict[str, Any]] = []
-    if not args.skip_final_quiz:
+    if bundle_quiz and not args.skip_final_quiz:
+        quiz_data = bundle_quiz
+    elif not args.skip_final_quiz:
         _notify(progress, "quiz", "Generating final quiz")
         quiz_data = generate_quiz(llm, outline, lesson_payloads, args.difficulty, args.quiz_questions, args.language)
         if not args.disable_review_pass:
@@ -325,167 +415,16 @@ def run_pipeline(args: Namespace, progress: Optional[ProgressCallback] = None) -
                 args.language,
             )
 
-    _notify(progress, "export", "Building HTML and saving outputs")
-    course_html = build_course_html(
-        outline, lesson_payloads, docs_info, pretest_data, quiz_data, args.language, args.include_source_excerpts
-    )
-    markdown_summary = build_markdown_summary(outline, docs_info, lesson_payloads, args.language)
-    full_markdown = build_full_course_markdown(
-        outline, docs_info, lesson_payloads, pretest_data, quiz_data, args.language
-    )
-
-    quality = compute_quality_score(
-        outline,
-        lesson_payloads,
-        pretest_data,
-        quiz_data,
+    return run_export_phase(
         args,
-        outline_rag_used=outline_rag_used,
-    )
-
-    if getattr(args, "quality_llm_review", False):
-        _notify(progress, "quality_llm_review", "LLM narrative quality review")
-        quality["llm_review"] = llm_quality_review(llm, outline, quality, args.language)
-
-    course_path = save_course_html(args.output_dir, course_html, args.output_prefix)
-    outline_path = save_outline_json(args.output_dir, outline, args.output_prefix)
-    quiz_path = save_quiz_json(args.output_dir, quiz_data, args.output_prefix)
-    pretest_path = save_pretest_json(args.output_dir, pretest_data, args.output_prefix)
-    metadata_path = save_course_metadata(args.output_dir, outline, docs_info, args)
-    summaries_path = save_lesson_summaries(args.output_dir, lesson_payloads, outline, args.output_prefix)
-    markdown_path = save_markdown_summary(args.output_dir, markdown_summary, args.output_prefix)
-    full_md_path = save_full_course_markdown(args.output_dir, full_markdown, args.output_prefix)
-    docx_path = ""
-    if getattr(args, "export_docx", False):
-        _notify(progress, "docx", "Exporting DOCX summary")
-        docx_path = save_course_docx(args.output_dir, markdown_summary, args.output_prefix)
-    pdf_path = ""
-    if getattr(args, "export_pdf", False):
-        _notify(progress, "pdf", "Exporting PDF summary")
-        pdf_path = save_course_pdf(args.output_dir, markdown_summary, args.output_prefix)
-    bundle_path = save_course_bundle(args.output_dir, outline, docs_info, lesson_payloads, pretest_data, quiz_data, args)
-
-    flashcards_path = ""
-    anki_path = ""
-    flashcards_count = 0
-    if getattr(args, "export_flashcards", True):
-        cards = build_flashcards(outline, lesson_payloads)
-        flashcards_count = len(cards)
-        if cards:
-            _notify(progress, "flashcards", f"Saving {flashcards_count} flashcards")
-            flashcards_path = save_flashcards_json(args.output_dir, cards, args.output_prefix)
-            anki_path = save_anki_tsv(args.output_dir, flashcards_to_anki_tsv(cards), args.output_prefix)
-
-    quizzes_csv_path = ""
-    if getattr(args, "export_quiz_csv", True) and (pretest_data or quiz_data):
-        _notify(progress, "quiz_csv", "Exporting quizzes.csv")
-        quizzes_csv_path = save_quizzes_csv(args.output_dir, pretest_data, quiz_data, args.output_prefix)
-
-    gift_path = ""
-    if getattr(args, "export_gift", True) and (pretest_data or quiz_data):
-        gift_text = combined_gift_export(pretest_data, quiz_data)
-        if gift_text.strip():
-            _notify(progress, "gift", "Exporting Moodle GIFT quizzes")
-            gift_path = save_quizzes_gift(args.output_dir, gift_text, args.output_prefix)
-
-    elapsed = time.time() - started
-    report_path = save_generation_report(
-        args.output_dir,
-        outline,
-        docs_info,
-        pretest_data,
-        quiz_data,
-        args,
-        elapsed,
-        outline_rag_used=outline_rag_used,
-        quality_score=quality,
+        outline=outline,
         lesson_payloads=lesson_payloads,
-        flashcards_count=flashcards_count,
+        docs_info=docs_info,
+        pretest_data=pretest_data,
+        quiz_data=quiz_data,
+        outline_rag_used=outline_rag_used,
+        llm=llm,
+        progress=progress,
+        started=started,
+        checkpoint_path=checkpoint_path,
     )
-
-    paths = {
-        "course_html": course_path,
-        "outline": outline_path,
-        "pretest": pretest_path,
-        "quiz": quiz_path,
-        "summaries": summaries_path,
-        "markdown": markdown_path,
-        "course_full_md": full_md_path,
-        "metadata": metadata_path,
-        "bundle": bundle_path,
-        "report": report_path,
-    }
-    if docx_path:
-        paths["docx"] = docx_path
-    if pdf_path:
-        paths["pdf"] = pdf_path
-    if flashcards_path:
-        paths["flashcards"] = flashcards_path
-    if anki_path:
-        paths["anki_tsv"] = anki_path
-    if quizzes_csv_path:
-        paths["quizzes_csv"] = quizzes_csv_path
-    if gift_path:
-        paths["quizzes_gift"] = gift_path
-
-    index_md = build_output_index_markdown(
-        paths,
-        course_title=str(outline.get("course_title", "")),
-        quality=quality,
-        elapsed_seconds=elapsed,
-    )
-    index_path = save_output_index(args.output_dir, index_md, args.output_prefix)
-    paths["output_index"] = index_path
-
-    from course_generator import __version__
-
-    manifest_path = save_run_manifest(
-        args.output_dir,
-        {
-            "generator_version": __version__,
-            "course_title": outline.get("course_title", ""),
-            "elapsed_seconds": round(elapsed, 2),
-            "quality_score": quality.get("overall_score"),
-            "grade": quality.get("grade"),
-            "lessons_count": len(outline.get("lessons", [])),
-            "lessons_fallback_count": sum(
-                1 for p in lesson_payloads if p.get("generation_mode") == "fallback"
-            ),
-            "paths": paths,
-        },
-        args.output_prefix,
-    )
-    paths["run_manifest"] = manifest_path
-
-    zip_path = ""
-    if not getattr(args, "no_delivery_zip", False):
-        _notify(progress, "zip", "Packaging delivery ZIP")
-        zip_path = create_delivery_zip(
-            paths,
-            args.output_dir,
-            args.output_prefix,
-            course_title=str(outline.get("course_title", "")),
-            quality=quality,
-            elapsed_seconds=elapsed,
-        )
-        paths["delivery_zip"] = zip_path
-
-    checkpoint_path = _save_checkpoint_if_enabled(args, outline, lesson_payloads, outline_rag_used, "complete") or checkpoint_path
-    _notify(progress, "done", f"Finished in {elapsed:.1f}s — quality {quality['overall_score']}/100")
-
-    result: Dict[str, Any] = {
-        "docs_info": docs_info,
-        "outline": outline,
-        "lesson_payloads": lesson_payloads,
-        "pretest": pretest_data,
-        "quiz": quiz_data,
-        "course_html": course_html,
-        "markdown_summary": markdown_summary,
-        "quality": quality,
-        "paths": paths,
-        "elapsed_seconds": round(elapsed, 2),
-        "outline_rag_used": outline_rag_used,
-    }
-    if checkpoint_path:
-        result["checkpoint"] = checkpoint_path
-    return result
