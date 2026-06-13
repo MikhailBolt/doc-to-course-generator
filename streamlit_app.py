@@ -34,9 +34,8 @@ from course_generator.constants import (
     SUPPORTED_EXTENSIONS,
 )
 from course_generator.checkpoints import find_recent_checkpoints
-from course_generator.history import list_recent_reports
+from course_generator.history import list_recent_bundles, list_recent_reports
 from course_generator.pipeline import run_pipeline
-from course_generator.rag import load_existing_vectorstore, retrieve_lesson_context
 from course_generator.rag import load_existing_vectorstore, retrieve_lesson_context
 from course_generator.user_settings import load_user_settings, save_user_settings
 
@@ -93,6 +92,9 @@ def _make_args(
     export_gift: bool,
     regenerate_fallback: bool,
     max_files: int,
+    from_bundle: Optional[str],
+    artifacts_only: bool,
+    regenerate_lessons: Optional[str],
 ) -> Namespace:
     return Namespace(
         docs_path=docs_path,
@@ -139,6 +141,9 @@ def _make_args(
         export_gift=export_gift,
         regenerate_fallback=regenerate_fallback,
         max_files=max_files if max_files > 0 else None,
+        from_bundle=from_bundle or None,
+        artifacts_only=artifacts_only,
+        regenerate_lessons=regenerate_lessons or None,
     )
 
 
@@ -310,7 +315,27 @@ def main() -> None:
         )
 
         st.header("Run mode")
-        dry_run = st.checkbox("Dry run (list files, no LLM)", value=False)
+        workflow_options = ["New course", "From bundle", "Rebuild exports (no LLM)"]
+        workflow_default = saved.get("workflow", workflow_options[0])
+        workflow_index = workflow_options.index(workflow_default) if workflow_default in workflow_options else 0
+        workflow = st.radio("Workflow", workflow_options, index=workflow_index, horizontal=True)
+
+        from_bundle = ""
+        regenerate_lessons = ""
+        artifacts_only = workflow == "Rebuild exports (no LLM)"
+        if workflow in ("From bundle", "Rebuild exports (no LLM)"):
+            from_bundle = st.text_input(
+                "Course bundle JSON",
+                value=saved.get("from_bundle", "output/course_bundle.json"),
+                placeholder="output/course_bundle.json",
+            )
+        if workflow == "From bundle":
+            regenerate_lessons = st.text_input(
+                "Regenerate lessons (optional, e.g. 2,4)",
+                value=saved.get("regenerate_lessons", ""),
+            )
+
+        dry_run = st.checkbox("Dry run (list files, no LLM)", value=False, disabled=artifacts_only)
         outline_only = st.checkbox(
             "Outline only",
             value=bool(preset_cfg.get("outline_only", False)),
@@ -319,12 +344,18 @@ def main() -> None:
             "Resume from outline JSON (optional)",
             value=saved.get("from_outline", ""),
             placeholder="output/course_outline.json",
+            disabled=workflow != "New course",
         )
-        checkpoint = st.checkbox("Save checkpoints (resume if interrupted)", value=False)
+        checkpoint = st.checkbox(
+            "Save checkpoints (resume if interrupted)",
+            value=False,
+            disabled=workflow != "New course",
+        )
         resume_checkpoint = st.text_input(
             "Resume from checkpoint JSON (optional)",
             value=saved.get("resume_checkpoint", ""),
             placeholder="output/.checkpoints/default/checkpoint.json",
+            disabled=workflow != "New course",
         )
         ollama_timeout = st.number_input(
             "Ollama timeout (seconds)",
@@ -375,26 +406,48 @@ def main() -> None:
         if recent:
             st.subheader("Recent runs")
             st.dataframe(recent, use_container_width=True, hide_index=True)
+
+        bundles = list_recent_bundles(DEFAULT_OUTPUT_DIR, limit=6)
+        if bundles:
+            st.subheader("Saved bundles")
+            st.caption("Use a path in **Course bundle JSON** (sidebar) for **From bundle** or **Rebuild exports**.")
+            display_rows = [
+                {
+                    "title": b.get("course_title", ""),
+                    "lessons": b.get("lessons_count", 0),
+                    "payloads": b.get("lesson_payloads_count", 0),
+                    "path": b.get("path", ""),
+                }
+                for b in bundles
+            ]
+            st.dataframe(display_rows, use_container_width=True, hide_index=True)
         return
 
     if int(min_lessons) > int(max_lessons):
         st.error("Min lessons must be ≤ max lessons.")
         return
 
-    if outline_only and from_outline and from_outline.strip():
+    if workflow != "New course":
+        if not from_bundle or not from_bundle.strip():
+            st.error("Provide a **Course bundle JSON** path.")
+            return
+        if not Path(from_bundle.strip()).is_file():
+            st.error(f"Bundle file not found: `{from_bundle.strip()}`")
+            return
+    elif outline_only and from_outline and from_outline.strip():
         st.error("Choose either **Outline only** or **Resume from outline**, not both.")
         return
     if resume_checkpoint and resume_checkpoint.strip() and from_outline and from_outline.strip():
         st.error("Choose either **Resume from checkpoint** or **Resume from outline**, not both.")
         return
 
-    if not dry_run:
+    if not dry_run and not artifacts_only:
         ollama_info = check_ollama(model)
         if not ollama_info.get("ok") or not ollama_info.get("model_available"):
             st.error(format_ollama_message(ollama_info))
             return
 
-    if source_mode == "Upload files":
+    if source_mode == "Upload files" and workflow == "New course":
         if not uploaded_files:
             st.error("Upload at least one file.")
             return
@@ -403,6 +456,8 @@ def main() -> None:
         upload_dir = Path(tempfile.mkdtemp(prefix="dtcg_", dir=str(tmp_root)))
         _save_uploads(uploaded_files, upload_dir)
         docs_path_final = str(upload_dir)
+    elif workflow != "New course":
+        docs_path_final = DEFAULT_DOCS_PATH
     else:
         if not docs_path or not docs_path.strip():
             st.error("Provide a docs path.")
@@ -448,6 +503,9 @@ def main() -> None:
         export_gift=bool(export_gift),
         regenerate_fallback=bool(regenerate_fallback),
         max_files=int(max_files),
+        from_bundle=from_bundle.strip() if from_bundle and from_bundle.strip() else None,
+        artifacts_only=bool(artifacts_only),
+        regenerate_lessons=regenerate_lessons.strip() if regenerate_lessons and regenerate_lessons.strip() else None,
     )
 
     ensure_directories(args.docs_path, args.db, args.manifest_file, args.output_dir, args.log_dir)
@@ -468,6 +526,9 @@ def main() -> None:
             "from_outline": from_outline.strip() if from_outline else "",
             "resume_checkpoint": resume_checkpoint.strip() if resume_checkpoint else "",
             "ollama_timeout": int(ollama_timeout),
+            "workflow": workflow,
+            "from_bundle": from_bundle.strip() if from_bundle else "",
+            "regenerate_lessons": regenerate_lessons.strip() if regenerate_lessons else "",
         }
     )
 

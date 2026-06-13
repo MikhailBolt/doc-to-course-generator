@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.10.0] — 2026-05-29
+
+### Added
+- **`--list-bundles`** — list recent `course_bundle.json` files in output dir
+- Streamlit **From bundle** and **Rebuild exports (no LLM)** workflows
+- HTML course: **Print / PDF** sidebar button
+- Improved `@media print` styles (page breaks, quiz explanations visible)
+
+### Changed
+- Removed dead imports from `pipeline.py` after export refactor
+- Bundle-related keys supported in `--config` JSON
+
 ## [1.9.0] — 2026-05-29
 
 ### Added

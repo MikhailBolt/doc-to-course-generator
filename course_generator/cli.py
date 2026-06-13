@@ -39,7 +39,7 @@ from course_generator.inspect_docs import build_documents_report
 from course_generator.batch import run_batch
 from course_generator.health import check_embeddings, check_ollama, format_ollama_message, list_ollama_models
 from course_generator.report_diff import diff_generation_reports
-from course_generator.history import list_recent_reports
+from course_generator.history import list_recent_bundles, list_recent_reports
 from course_generator.io import load_outline_json
 from course_generator.pipeline import run_pipeline
 from course_generator.presets import PRESET_CLI_SLUGS, apply_cli_preset
@@ -161,6 +161,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Timeout in seconds for each Ollama request (default: OLLAMA_TIMEOUT env or 120).",
     )
     parser.add_argument("--list-runs", action="store_true", help="List recent generation reports and exit.")
+    parser.add_argument("--list-bundles", action="store_true", help="List recent course_bundle.json files and exit.")
     parser.add_argument(
         "--validate-outline",
         metavar="PATH",
@@ -355,6 +356,22 @@ def main() -> None:
             print(
                 f"  {row.get('generated_at', '?')} | {row.get('model', '?')} | "
                 f"{row.get('lessons_count', 0)} lessons | quality {q_txt} | {row.get('elapsed_seconds', '?')}s"
+            )
+            print(f"    {row.get('path', '')}")
+        sys.exit(0)
+
+    if args.list_bundles:
+        bundles = list_recent_bundles(args.output_dir, limit=12)
+        if not bundles:
+            print(f"No course bundles found in '{args.output_dir}'.")
+            sys.exit(0)
+        print(f"Recent bundles in {args.output_dir}:")
+        for row in bundles:
+            print(
+                f"  {row.get('course_title', '?')} | "
+                f"{row.get('lessons_count', 0)} lessons | "
+                f"payloads {row.get('lesson_payloads_count', 0)} | "
+                f"pretest {row.get('pretest_count', 0)} | quiz {row.get('quiz_count', 0)}"
             )
             print(f"    {row.get('path', '')}")
         sys.exit(0)

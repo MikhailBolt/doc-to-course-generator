@@ -213,6 +213,7 @@ def build_course_html(
         "course_progress": "Прогресс курса" if is_ru else "Course progress",
         "search_placeholder": "Поиск по курсу…" if is_ru else "Search course…",
         "complete": "пройдено" if is_ru else "complete",
+        "print_course": "Печать / PDF" if is_ru else "Print / PDF",
     }
 
     course_slug = re.sub(r"[^a-zA-Z0-9_-]+", "_", outline.get("course_title", "course"))[:48].strip("_") or "course"
@@ -401,11 +402,17 @@ def build_course_html(
     body.theme-dark .question-lesson {{ background:#312e81; color:#c7d2fe; }}
     @media (max-width:980px) {{ .layout {{ grid-template-columns:1fr; }} .sidebar {{ position:relative; height:auto; }} .content {{ padding:18px; }} }}
     @media print {{
-      body {{ background:#fff; }}
-      .sidebar {{ display:none; }}
+      body {{ background:#fff; color:#000; }}
+      .sidebar, .back-to-top, .theme-toggle, .copy-link {{ display:none !important; }}
       .layout {{ display:block; }}
-      .card, .lesson-section {{ box-shadow:none; border:1px solid #ddd; break-inside:avoid; }}
-      button, .quiz-actions {{ display:none; }}
+      .content {{ max-width:none; padding:0; }}
+      .card, .lesson-section {{ box-shadow:none; border:1px solid #ccc; break-inside:avoid; page-break-inside:avoid; }}
+      .lesson-section {{ page-break-before:always; }}
+      .lesson-section:first-of-type {{ page-break-before:auto; }}
+      #overview {{ page-break-after:always; }}
+      button, .quiz-actions, .lesson-toc-label input {{ display:none; }}
+      .quiz-explanation {{ display:block !important; color:#333; }}
+      a {{ color:#000; text-decoration:none; }}
     }}
   </style>
 </head>
@@ -422,6 +429,7 @@ def build_course_html(
       </div>
       <ol>{toc_html}</ol>
       <button type="button" class="theme-toggle" id="theme-toggle" onclick="toggleTheme()">🌙 Dark</button>
+      <button type="button" class="theme-toggle" style="margin-top:8px;" onclick="window.print()">🖨 {html.escape(labels['print_course'])}</button>
     </aside>
     <main class="content">
       <section class="card hero" id="overview">

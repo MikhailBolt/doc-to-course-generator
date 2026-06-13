@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "doc-to-course-generator"
-version = "1.9.0"
+version = "1.10.0"
 description = "Generate HTML training courses and quizzes from documents using local LLM + RAG"
 readme = "README.md"
 requires-python = ">=3.9"

@@ -47,6 +47,9 @@ CONFIG_KEYS: Set[str] = {
     "ollama_timeout",
     "max_files",
     "preset",
+    "from_bundle",
+    "artifacts_only",
+    "regenerate_lessons",
 }
 
 
