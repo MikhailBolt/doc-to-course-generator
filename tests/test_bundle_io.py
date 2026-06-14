@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from course_generator.bundle_io import load_bundle_json, parse_lesson_indices, validate_bundle_file
+from course_generator.bundle_io import find_latest_bundle_path, load_bundle_json, parse_lesson_indices, validate_bundle_file
 
 
 def _minimal_outline():
@@ -52,3 +52,15 @@ def test_load_bundle_missing_outline(tmp_path):
     path.write_text("{}", encoding="utf-8")
     with pytest.raises(ValueError):
         load_bundle_json(str(path))
+
+
+def test_find_latest_bundle_path(tmp_path):
+    import time
+
+    older = tmp_path / "old_course_bundle.json"
+    newer = tmp_path / "new_course_bundle.json"
+    older.write_text("{}", encoding="utf-8")
+    time.sleep(0.05)
+    newer.write_text("{}", encoding="utf-8")
+    assert find_latest_bundle_path(str(tmp_path)).endswith("new_course_bundle.json")
+

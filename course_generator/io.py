@@ -211,9 +211,12 @@ def save_course_metadata(output_dir: str, outline: Dict[str, Any], docs_info: Li
 
 
 def save_course_bundle(output_dir: str, outline: Dict[str, Any], docs_info: List[Dict[str, Any]], lesson_payloads: List[Dict[str, Any]], pretest_data: List[Dict[str, Any]], quiz_data: List[Dict[str, Any]], args: Namespace) -> str:
+    from course_generator import __version__
+
     path = build_output_path(output_dir, "course_bundle.json", args.output_prefix)
     payload = {
         "generated_at": datetime.now().isoformat(),
+        "generator_version": __version__,
         "config": {
             "model": args.model,
             "embedding_model": args.embedding_model,

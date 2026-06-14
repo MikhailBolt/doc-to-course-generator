@@ -17,6 +17,19 @@ def parse_lesson_indices(spec: Optional[str]) -> List[int]:
     return sorted(set(n for n in indices if n > 0))
 
 
+def find_latest_bundle_path(output_dir: str) -> str:
+    """Return path to the newest course_bundle.json under output_dir, or raise FileNotFoundError."""
+    root = Path(output_dir)
+    if not root.exists():
+        raise FileNotFoundError(f"Output directory not found: {output_dir}")
+    candidates = list(root.glob("*course_bundle.json")) + list(root.glob("course_bundle.json"))
+    candidates = [p for p in candidates if p.is_file()]
+    if not candidates:
+        raise FileNotFoundError(f"No course_bundle.json found in '{output_dir}'.")
+    latest = max(candidates, key=lambda p: p.stat().st_mtime)
+    return str(latest)
+
+
 def load_bundle_json(path: str) -> Dict[str, Any]:
     file_path = Path(path)
     if not file_path.is_file():

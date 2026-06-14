@@ -34,7 +34,8 @@ from course_generator.constants import (
 from course_generator.config_loader import CONFIG_KEYS, apply_config_file
 from course_generator.scaffold import init_project_directories
 from course_generator.audit import audit_output_paths
-from course_generator.bundle_io import validate_bundle_file
+from course_generator.bundle_io import find_latest_bundle_path, validate_bundle_file
+from course_generator.bundle_diff import diff_course_bundles
 from course_generator.inspect_docs import build_documents_report
 from course_generator.batch import run_batch
 from course_generator.health import check_embeddings, check_ollama, format_ollama_message, list_ollama_models
@@ -270,6 +271,18 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Validate a course_bundle.json file and exit.",
     )
+    parser.add_argument(
+        "--diff-bundles",
+        nargs=2,
+        metavar=("BUNDLE_A", "BUNDLE_B"),
+        default=None,
+        help="Compare two course_bundle.json files and exit.",
+    )
+    parser.add_argument(
+        "--latest-bundle",
+        action="store_true",
+        help="Use the newest course_bundle.json in --output-dir (sets --from-bundle).",
+    )
     return parser
 
 
@@ -432,6 +445,17 @@ def main() -> None:
         print(json.dumps(diff, ensure_ascii=False, indent=2))
         sys.exit(0)
 
+    if args.diff_bundles:
+        import json
+
+        try:
+            diff = diff_course_bundles(args.diff_bundles[0], args.diff_bundles[1])
+        except Exception as exc:
+            print(f"(X) {exc}")
+            sys.exit(1)
+        print(json.dumps(diff, ensure_ascii=False, indent=2))
+        sys.exit(0)
+
     try:
         apply_cli_preset(args)
     except ValueError as exc:
@@ -439,6 +463,17 @@ def main() -> None:
         sys.exit(1)
 
     ensure_directories(args.docs_path, args.db, args.manifest_file, args.output_dir, args.log_dir)
+
+    if getattr(args, "latest_bundle", False):
+        if getattr(args, "from_bundle", None):
+            print("(X) Use either --latest-bundle or --from-bundle, not both.")
+            sys.exit(1)
+        try:
+            args.from_bundle = find_latest_bundle_path(args.output_dir)
+            print(f"[OK] Using latest bundle: {args.from_bundle}")
+        except FileNotFoundError as exc:
+            print(f"(X) {exc}")
+            sys.exit(1)
 
     if args.min_lessons < 1 or args.max_lessons < args.min_lessons:
         print("(X) Invalid lesson range. Check --min-lessons and --max-lessons.")

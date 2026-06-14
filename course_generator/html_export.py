@@ -5,7 +5,7 @@ from datetime import datetime
 from typing import Any, Dict, List
 
 from course_generator import __version__
-from course_generator.utils import estimate_duration_minutes
+from course_generator.utils import estimate_duration_minutes, estimate_reading_minutes
 
 
 def html_section_to_plain(section_html: str) -> str:
@@ -214,6 +214,8 @@ def build_course_html(
         "search_placeholder": "Поиск по курсу…" if is_ru else "Search course…",
         "complete": "пройдено" if is_ru else "complete",
         "print_course": "Печать / PDF" if is_ru else "Print / PDF",
+        "reading_time": "Время чтения" if is_ru else "Reading time",
+        "min_read": "мин чтения" if is_ru else "min read",
     }
 
     course_slug = re.sub(r"[^a-zA-Z0-9_-]+", "_", outline.get("course_title", "course"))[:48].strip("_") or "course"
@@ -236,9 +238,22 @@ def build_course_html(
         f'<li><a href="#overview">{labels["overview"]}</a></li>',
         f'<li><a href="#prerequisites">{labels["prerequisites"]}</a></li>',
     ]
+    lesson_read_minutes: List[int] = []
     if pretest_data:
         toc_items.append(f'<li><a href="#pretest">{labels["pretest"]}</a></li>')
-    for i, lesson in enumerate(outline.get("lessons", []), start=1):
+    for i, (lesson, payload) in enumerate(zip(outline.get("lessons", []), lesson_payloads), start=1):
+        title = html.escape(lesson.get("title", f"Lesson {i}"))
+        read_mins = estimate_reading_minutes(html_section_to_plain(payload.get("lesson_html", "")))
+        lesson_read_minutes.append(read_mins)
+        toc_items.append(
+            f'<li class="lesson-toc-item">'
+            f'<label class="lesson-toc-label">'
+            f'<input type="checkbox" class="lesson-done" data-lesson="{i}" /> '
+            f'<a href="#lesson-{i}">{title}</a>'
+            f'<span class="read-time">{read_mins} {labels["min_read"]}</span>'
+            f'</label></li>'
+        )
+    for i, lesson in enumerate(outline.get("lessons", [])[len(lesson_payloads):], start=len(lesson_payloads) + 1):
         title = html.escape(lesson.get("title", f"Lesson {i}"))
         toc_items.append(
             f'<li class="lesson-toc-item">'
@@ -299,8 +314,10 @@ def build_course_html(
     glossary_html = build_glossary_html(glossary)
 
     lesson_count = len(outline.get("lessons", []))
-    estimated_minutes = estimate_duration_minutes(outline)
+    reading_minutes_total = sum(lesson_read_minutes) if lesson_read_minutes else estimate_duration_minutes(outline)
+    estimated_minutes = max(estimate_duration_minutes(outline), reading_minutes_total)
     generated_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    meta_description = html.escape(str(outline.get("course_description", ""))[:300])
 
     pretest_section = f"""
       <section class="card" id="pretest">
@@ -335,6 +352,10 @@ def build_course_html(
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="description" content="{meta_description}" />
+  <meta property="og:title" content="{course_title}" />
+  <meta property="og:description" content="{meta_description}" />
+  <meta property="og:type" content="article" />
   <title>{course_title}</title>
   <style>
     :root {{ --bg:#0f172a; --panel:#ffffff; --text:#1f2937; --muted:#64748b; --line:#e2e8f0; --primary:#2563eb; --primary-soft:#dbeafe; --shadow:0 10px 30px rgba(15,23,42,0.08); --radius:18px; }}
@@ -393,6 +414,7 @@ def build_course_html(
     .lesson-section.search-hidden {{ display:none; }}
     .search-hit {{ background:#fef08a; color:#111; padding:0 2px; border-radius:2px; }}
     .copy-link {{ margin-left:8px; font-size:0.8rem; color:var(--primary); cursor:pointer; border:0; background:transparent; text-decoration:underline; }}
+    .read-time {{ margin-left:auto; font-size:0.75rem; color:#94a3b8; white-space:nowrap; }}
     body.theme-dark .search-hit {{ background:#854d0e; color:#fef9c3; }}
     body.theme-dark {{ --panel:#1e293b; --text:#e2e8f0; --muted:#94a3b8; --line:#334155; --primary-soft:#1e3a5f; background:#0b1120; }}
     body.theme-dark .hero h1, body.theme-dark h2, body.theme-dark h3, body.theme-dark .stat-value {{ color:#f1f5f9; }}
@@ -441,6 +463,7 @@ def build_course_html(
         <p><strong>{labels['target_audience']}:</strong> {target_audience}</p>
         <div class="grid">
           <div class="stat"><div class="stat-label">{labels['estimated_duration']}</div><div class="stat-value">{estimated_minutes} {labels['minutes']}</div></div>
+          <div class="stat"><div class="stat-label">{labels['reading_time']}</div><div class="stat-value">{reading_minutes_total} {labels['minutes']}</div></div>
           <div class="stat"><div class="stat-label">{labels['lessons']}</div><div class="stat-value">{lesson_count}</div></div>
           <div class="stat"><div class="stat-label">{labels['documents_count']}</div><div class="stat-value">{len(docs_info)}</div></div>
           <div class="stat"><div class="stat-label">{labels['final_questions']}</div><div class="stat-value">{len(final_quiz_data)}</div></div>

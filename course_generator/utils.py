@@ -76,6 +76,14 @@ def estimate_duration_minutes(outline: Dict[str, Any]) -> int:
     return max(20, lesson_count * 12 + 10)
 
 
+def estimate_reading_minutes(text: str, wpm: int = 200) -> int:
+    """Estimate reading time from plain or HTML-ish text."""
+    if not text or not str(text).strip():
+        return 1
+    words = len(re.findall(r"\w+", str(text), flags=re.UNICODE))
+    return max(1, round(words / max(wpm, 1)))
+
+
 def ensure_minimum_quiz_coverage(quiz_data: List[Dict[str, Any]], lesson_titles: List[str]) -> Dict[str, Any]:
     covered = set()
     for q in quiz_data:

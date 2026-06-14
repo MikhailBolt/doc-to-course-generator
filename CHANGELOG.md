@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.11.0] — 2026-05-29
+
+### Added
+- **`--diff-bundles`** — compare two `course_bundle.json` files (titles, counts, lesson renames)
+- **`--latest-bundle`** — use the newest bundle in `--output-dir`
+- HTML: content-based **reading time** in sidebar TOC and hero stats
+- HTML: **Open Graph** meta tags for sharing
+- `generator_version` field in saved bundles
+- Streamlit: **Validate bundle** button on home screen
+
+### Fixed
+- CI: `pythonpath = .` in `pytest.ini` and `pip install -e .` in workflow (fixes `ModuleNotFoundError`)
+
 ## [1.10.0] — 2026-05-29
 
 ### Added

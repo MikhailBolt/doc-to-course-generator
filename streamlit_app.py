@@ -33,6 +33,7 @@ from course_generator.constants import (
     DEFAULT_TOP_K,
     SUPPORTED_EXTENSIONS,
 )
+from course_generator.bundle_io import validate_bundle_file
 from course_generator.checkpoints import find_recent_checkpoints
 from course_generator.history import list_recent_bundles, list_recent_reports
 from course_generator.pipeline import run_pipeline
@@ -421,6 +422,21 @@ def main() -> None:
                 for b in bundles
             ]
             st.dataframe(display_rows, use_container_width=True, hide_index=True)
+            validate_path = st.text_input(
+                "Validate bundle path",
+                value=bundles[0].get("path", ""),
+                key="validate_bundle_path",
+            )
+            if st.button("Validate bundle", use_container_width=True) and validate_path.strip():
+                try:
+                    summary = validate_bundle_file(validate_path.strip())
+                    st.success(
+                        f"OK — {summary.get('course_title', '')} · "
+                        f"{summary.get('lessons_count', 0)} lessons · "
+                        f"{summary.get('lesson_payloads_count', 0)} payloads"
+                    )
+                except Exception as exc:
+                    st.error(str(exc))
         return
 
     if int(min_lessons) > int(max_lessons):
