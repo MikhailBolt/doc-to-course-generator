@@ -35,6 +35,7 @@ from course_generator.constants import (
 )
 from course_generator.bundle_io import validate_bundle_file
 from course_generator.checkpoints import find_recent_checkpoints
+from course_generator.doctor import run_doctor
 from course_generator.history import list_recent_bundles, list_recent_reports
 from course_generator.pipeline import run_pipeline
 from course_generator.rag import load_existing_vectorstore, retrieve_lesson_context
@@ -185,6 +186,45 @@ def main() -> None:
                 st.error(format_ollama_message(info))
             else:
                 st.success(format_ollama_message(info))
+
+        if st.button("Run doctor", use_container_width=True):
+            doctor_args = Namespace(
+                docs_path=saved.get("docs_path") or os.getenv("DOCS_PATH", DEFAULT_DOCS_PATH),
+                db=DEFAULT_DB_FAISS_PATH,
+                manifest_file=DEFAULT_MANIFEST_FILE,
+                output_dir=DEFAULT_OUTPUT_DIR,
+                log_dir=DEFAULT_LOG_DIR,
+                model=model,
+                embedding_model=saved.get("embedding_model")
+                or os.getenv("EMBEDDING_MODEL", DEFAULT_EMBEDDING_MODEL),
+                recursive_docs=saved.get("recursive_docs", False),
+                ollama_timeout=int(saved.get("ollama_timeout", 120)),
+                check_embeddings=False,
+            )
+            report = run_doctor(doctor_args)
+            if report.get("ready_for_generation"):
+                st.success("Ready for generation")
+            else:
+                st.warning("Not ready — see checks below")
+            for check in report.get("checks", []):
+                icon = "✅" if check.get("ok") else "⚠️"
+                st.markdown(f"{icon} **{check.get('label')}** — {check.get('detail', '')}")
+
+        with st.expander("Clean output folder"):
+            st.caption("Removes old generator artifacts. Default is a dry-run preview.")
+            keep_last_ui = st.number_input("Keep last per type", min_value=0, max_value=20, value=1, step=1)
+            if st.button("Preview cleanup", use_container_width=True):
+                from course_generator.clean_output import clean_output_dir
+
+                plan = clean_output_dir(DEFAULT_OUTPUT_DIR, keep_last=int(keep_last_ui), dry_run=True)
+                st.write(f"Would delete **{plan['delete_count']}** file(s), keep **{plan['keep_count']}**.")
+                if plan["delete"]:
+                    st.code("\n".join(plan["delete"][:30]))
+            if st.button("Delete old artifacts", type="secondary", use_container_width=True):
+                from course_generator.clean_output import clean_output_dir
+
+                plan = clean_output_dir(DEFAULT_OUTPUT_DIR, keep_last=int(keep_last_ui), dry_run=False)
+                st.success(f"Deleted {len(plan.get('deleted', []))} file(s).")
 
         st.header("Inputs")
         source_mode = st.radio("Source", ["Upload files", "Use local docs folder"], index=0)
@@ -673,6 +713,7 @@ def main() -> None:
             ("Moodle GIFT", "quizzes_gift", "text/plain"),
             ("Output index", "output_index", "text/markdown"),
             ("Run manifest", "run_manifest", "application/json"),
+            ("Course summary (JSON)", "course_summary", "application/json"),
         ]:
             p = paths.get(key)
             if p and Path(p).exists():

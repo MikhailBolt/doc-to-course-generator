@@ -35,7 +35,8 @@ from course_generator.config_loader import CONFIG_KEYS, apply_config_file
 from course_generator.scaffold import init_project_directories
 from course_generator.audit import audit_output_paths
 from course_generator.bundle_io import find_latest_bundle_path, validate_bundle_file
-from course_generator.bundle_diff import diff_course_bundles
+from course_generator.clean_output import clean_output_dir
+from course_generator.doctor import run_doctor
 from course_generator.inspect_docs import build_documents_report
 from course_generator.batch import run_batch
 from course_generator.health import check_embeddings, check_ollama, format_ollama_message, list_ollama_models
@@ -283,6 +284,28 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Use the newest course_bundle.json in --output-dir (sets --from-bundle).",
     )
+    parser.add_argument(
+        "--doctor",
+        action="store_true",
+        help="Run environment readiness checks (Ollama, docs, output, FAISS, bundles) and exit.",
+    )
+    parser.add_argument(
+        "--clean-output",
+        action="store_true",
+        help="Delete old generator artifacts in --output-dir (dry-run unless --yes).",
+    )
+    parser.add_argument(
+        "--keep-last",
+        type=int,
+        default=1,
+        metavar="N",
+        help="With --clean-output, keep the N newest files per artifact type (0 = delete all).",
+    )
+    parser.add_argument(
+        "--yes",
+        action="store_true",
+        help="Confirm destructive actions such as --clean-output.",
+    )
     return parser
 
 
@@ -356,6 +379,48 @@ def main() -> None:
         print(f"     Lessons: {len(outline.get('lessons', []))}")
         print(f"     Glossary: {len(outline.get('glossary', []))}")
         sys.exit(0)
+
+    if args.doctor:
+        import json
+
+        ensure_directories(args.docs_path, args.db, args.manifest_file, args.output_dir, args.log_dir)
+        report = run_doctor(args, check_embeddings_model=bool(args.check_embeddings))
+        for check in report["checks"]:
+            mark = "OK" if check.get("ok") else "X"
+            detail = check.get("detail", "")
+            print(f"[{mark}] {check.get('label')}" + (f" — {detail}" if detail else ""))
+        print()
+        if report.get("ready_for_generation"):
+            print("[OK] Ready for generation (Ollama + documents + output dir).")
+        else:
+            print("(X) Not ready for generation — fix required checks above.")
+        if report.get("latest_bundle"):
+            print(f"Latest bundle: {report['latest_bundle']}")
+        if getattr(args, "json_result", False):
+            print(json.dumps(report, ensure_ascii=False, indent=2, default=str))
+        sys.exit(0 if report.get("ok") else 1)
+
+    if args.clean_output:
+        import json
+
+        plan = clean_output_dir(
+            args.output_dir,
+            keep_last=int(getattr(args, "keep_last", 1)),
+            dry_run=not bool(getattr(args, "yes", False)),
+        )
+        mode = "DRY RUN" if plan.get("dry_run") else "DELETED"
+        print(f"[{mode}] {plan['delete_count']} file(s) to remove, keep {plan['keep_count']} (keep-last={plan['keep_last']})")
+        for path in plan.get("delete", [])[:40]:
+            print(f"  - {path}")
+        if len(plan.get("delete", [])) > 40:
+            print(f"  … and {len(plan['delete']) - 40} more")
+        if plan.get("dry_run"):
+            print("Re-run with --yes to delete.")
+        for err in plan.get("errors", []):
+            print(f"(X) {err}")
+        if getattr(args, "json_result", False):
+            print(json.dumps(plan, ensure_ascii=False, indent=2))
+        sys.exit(0 if plan.get("ok", True) else 1)
 
     if args.list_runs:
         runs = list_recent_reports(args.output_dir, limit=12)
@@ -578,6 +643,8 @@ def main() -> None:
         print(f"Output index:       {paths['output_index']}")
     if paths.get("run_manifest"):
         print(f"Run manifest:       {paths['run_manifest']}")
+    if paths.get("course_summary"):
+        print(f"Course summary:     {paths['course_summary']}")
     if paths.get("delivery_zip"):
         print(f"Delivery ZIP:       {paths['delivery_zip']}")
     if result.get("checkpoint"):

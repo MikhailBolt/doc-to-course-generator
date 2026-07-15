@@ -1,6 +1,6 @@
 # 📚 Doc-to-Course Generator
 
-**Version 1.11.0**
+**Version 1.13.0**
 
 Generate a structured **HTML training course** and **assessment quizzes** from documents using **local LLMs**, **RAG**, **FAISS**, and **Ollama**.
 
@@ -63,6 +63,11 @@ python main.py --version
 - **`--latest-bundle`** — auto-pick newest bundle in output dir
 - HTML: **reading time** per lesson + Open Graph meta tags
 - Bundle JSON includes **`generator_version`**
+- **`--doctor`** — readiness check (Ollama, docs, FAISS, bundles)
+- **`course_summary.json`** — compact integration-friendly export
+- HTML: **keyboard navigation** (J/K, ↑/↓) and quiz **shuffle**
+- **`--clean-output`** — prune old artifacts (`--keep-last`, `--yes`)
+- HTML: **A+/A−** font size and **per-lesson notes** (saved in browser)
 - **CLI presets** (`--preset quick|full|outline`)
 - **Recursive docs** (`--recursive-docs` / `DOCS_RECURSIVE` / Streamlit “Scan subfolders”)
 - Relative source labels in RAG for nested files (fewer name collisions)

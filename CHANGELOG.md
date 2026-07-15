@@ -1,5 +1,22 @@
 # Changelog
 
+## [1.13.0] — 2026-07-15
+
+### Added
+- **`--clean-output`** — dry-run cleanup of generator artifacts (`--keep-last N`, confirm with `--yes`)
+- HTML: **A+/A−** font-size controls (persisted in localStorage)
+- HTML: **per-lesson notes** textarea (persisted per course in browser)
+- CI: opt into **Node.js 24** for Actions (`FORCE_JAVASCRIPT_ACTIONS_TO_NODE24`)
+
+## [1.12.0] — 2026-05-29
+
+### Added
+- **`--doctor`** — environment readiness report (Ollama, docs, output, FAISS, bundles)
+- **`course_summary.json`** — compact course summary for integrations
+- HTML: **J/K** and **arrow-key** section navigation
+- HTML: **Shuffle** button for pre-test and final quiz
+- Streamlit: **Run doctor** button in sidebar
+
 ## [1.11.0] — 2026-05-29
 
 ### Added

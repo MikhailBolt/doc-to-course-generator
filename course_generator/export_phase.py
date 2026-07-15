@@ -5,7 +5,7 @@ from typing import Any, Callable, Dict, List, Optional
 from course_generator.export import create_delivery_zip
 from course_generator.flashcards import build_flashcards, flashcards_to_anki_tsv
 from course_generator.gift_export import combined_gift_export
-from course_generator.html_export import build_course_html, build_full_course_markdown, build_markdown_summary
+from course_generator.html_export import build_course_html, build_full_course_markdown, build_markdown_summary, html_section_to_plain
 from course_generator.io import (
     save_anki_tsv,
     save_course_bundle,
@@ -25,10 +25,12 @@ from course_generator.io import (
     save_quizzes_csv,
     save_quizzes_gift,
     save_run_manifest,
+    save_course_summary_json,
 )
 from course_generator.llm_review import llm_quality_review
 from course_generator.output_index import build_output_index_markdown
 from course_generator.quality import compute_quality_score
+from course_generator.utils import estimate_reading_minutes
 
 ProgressCallback = Callable[[str, str], None]
 
@@ -194,6 +196,23 @@ def run_export_phase(
         args.output_prefix,
     )
     paths["run_manifest"] = manifest_path
+
+    reading_minutes = sum(
+        estimate_reading_minutes(html_section_to_plain(p.get("lesson_html", "")))
+        for p in lesson_payloads
+    )
+    summary_path = save_course_summary_json(
+        args.output_dir,
+        outline=outline,
+        lesson_payloads=lesson_payloads,
+        quality=quality,
+        paths=paths,
+        elapsed_seconds=elapsed,
+        reading_minutes=reading_minutes,
+        language=args.language,
+        output_prefix=args.output_prefix,
+    )
+    paths["course_summary"] = summary_path
 
     zip_path = ""
     if not getattr(args, "no_delivery_zip", False):

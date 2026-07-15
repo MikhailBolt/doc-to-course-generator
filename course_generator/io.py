@@ -85,6 +85,51 @@ def save_run_manifest(output_dir: str, payload: Dict[str, Any], output_prefix: s
     return save_json(build_output_path(output_dir, "run_manifest.json", output_prefix), payload)
 
 
+def save_course_summary_json(
+    output_dir: str,
+    *,
+    outline: Dict[str, Any],
+    lesson_payloads: List[Dict[str, Any]],
+    quality: Dict[str, Any],
+    paths: Dict[str, str],
+    elapsed_seconds: float,
+    reading_minutes: int,
+    language: str = "en",
+    output_prefix: str = "",
+) -> str:
+    from course_generator import __version__
+
+    lessons = outline.get("lessons", []) or []
+    payload = {
+        "generator_version": __version__,
+        "course_title": outline.get("course_title", ""),
+        "course_description": outline.get("course_description", ""),
+        "language": language,
+        "lessons_count": len(lessons),
+        "lesson_titles": [str(item.get("title", "")) for item in lessons if isinstance(item, dict)],
+        "lessons_fallback_count": sum(1 for p in lesson_payloads if p.get("generation_mode") == "fallback"),
+        "reading_minutes": reading_minutes,
+        "estimated_minutes": estimate_duration_minutes(outline),
+        "quality_score": quality.get("overall_score"),
+        "grade": quality.get("grade"),
+        "elapsed_seconds": round(elapsed_seconds, 2),
+        "paths": {
+            k: paths[k]
+            for k in (
+                "course_html",
+                "outline",
+                "bundle",
+                "report",
+                "delivery_zip",
+                "flashcards",
+                "quizzes_csv",
+            )
+            if paths.get(k)
+        },
+    }
+    return save_json(build_output_path(output_dir, "course_summary.json", output_prefix), payload)
+
+
 def save_course_docx(output_dir: str, markdown_text: str, output_prefix: str = "") -> str:
     from course_generator.docx_export import export_markdown_to_docx
 

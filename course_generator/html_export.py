@@ -216,6 +216,11 @@ def build_course_html(
         "print_course": "Печать / PDF" if is_ru else "Print / PDF",
         "reading_time": "Время чтения" if is_ru else "Reading time",
         "min_read": "мин чтения" if is_ru else "min read",
+        "shuffle": "Перемешать" if is_ru else "Shuffle",
+        "nav_hint": "Навигация: J/K или ↑/↓" if is_ru else "Navigate: J/K or ↑/↓",
+        "font_size": "Размер шрифта" if is_ru else "Font size",
+        "notes": "Мои заметки" if is_ru else "My notes",
+        "notes_placeholder": "Заметки сохраняются в этом браузере…" if is_ru else "Notes are saved in this browser…",
     }
 
     course_slug = re.sub(r"[^a-zA-Z0-9_-]+", "_", outline.get("course_title", "course"))[:48].strip("_") or "course"
@@ -306,6 +311,12 @@ def build_course_html(
   {excerpt_items}
 </div>
 """
+        section_with_anchor += f"""
+<div class="lesson-notes">
+  <h3>{labels['notes']}</h3>
+  <textarea class="lesson-note" data-lesson="{i}" rows="3" placeholder="{html.escape(labels['notes_placeholder'])}"></textarea>
+</div>
+"""
         lesson_sections.append(section_with_anchor)
 
     lesson_sections_html = "\n\n".join(lesson_sections)
@@ -326,6 +337,7 @@ def build_course_html(
         <div class="quiz-actions">
           <button type="button" onclick="gradeQuiz('pretest')">{labels['check_pretest']}</button>
           <button type="button" class="secondary" onclick="resetQuiz('pretest')">{labels['reset']}</button>
+          <button type="button" class="secondary" onclick="shuffleQuiz('pretest')">{labels['shuffle']}</button>
         </div>
         <div class="progress-wrap"><div class="progress-bar" id="pretest-progress"></div></div>
         <div class="quiz-results" id="pretest-results"></div>
@@ -340,6 +352,7 @@ def build_course_html(
         <div class="quiz-actions">
           <button type="button" onclick="gradeQuiz('final')">{labels['check_final']}</button>
           <button type="button" class="secondary" onclick="resetQuiz('final')">{labels['reset']}</button>
+          <button type="button" class="secondary" onclick="shuffleQuiz('final')">{labels['shuffle']}</button>
         </div>
         <div class="progress-wrap"><div class="progress-bar" id="final-progress"></div></div>
         <div class="quiz-results" id="final-results"></div>
@@ -415,6 +428,16 @@ def build_course_html(
     .search-hit {{ background:#fef08a; color:#111; padding:0 2px; border-radius:2px; }}
     .copy-link {{ margin-left:8px; font-size:0.8rem; color:var(--primary); cursor:pointer; border:0; background:transparent; text-decoration:underline; }}
     .read-time {{ margin-left:auto; font-size:0.75rem; color:#94a3b8; white-space:nowrap; }}
+    .nav-hint {{ margin-top:12px; font-size:0.75rem; color:#94a3b8; line-height:1.4; }}
+    .font-controls {{ display:flex; gap:8px; margin-top:12px; }}
+    .font-controls button {{ flex:1; padding:8px 10px; }}
+    .lesson-notes {{ margin-top:18px; padding-top:16px; border-top:1px solid var(--line); }}
+    .lesson-note {{ width:100%; min-height:72px; border:1px solid var(--line); border-radius:12px; padding:10px 12px; font:inherit; resize:vertical; background:#f8fafc; color:inherit; }}
+    body.theme-dark .lesson-note {{ background:#0f172a; border-color:#334155; }}
+    body.font-sm {{ font-size:15px; }}
+    body.font-md {{ font-size:16px; }}
+    body.font-lg {{ font-size:18px; }}
+    body.font-xl {{ font-size:20px; }}
     body.theme-dark .search-hit {{ background:#854d0e; color:#fef9c3; }}
     body.theme-dark {{ --panel:#1e293b; --text:#e2e8f0; --muted:#94a3b8; --line:#334155; --primary-soft:#1e3a5f; background:#0b1120; }}
     body.theme-dark .hero h1, body.theme-dark h2, body.theme-dark h3, body.theme-dark .stat-value {{ color:#f1f5f9; }}
@@ -425,7 +448,7 @@ def build_course_html(
     @media (max-width:980px) {{ .layout {{ grid-template-columns:1fr; }} .sidebar {{ position:relative; height:auto; }} .content {{ padding:18px; }} }}
     @media print {{
       body {{ background:#fff; color:#000; }}
-      .sidebar, .back-to-top, .theme-toggle, .copy-link {{ display:none !important; }}
+      .sidebar, .back-to-top, .theme-toggle, .copy-link, .font-controls, .lesson-notes, .nav-hint {{ display:none !important; }}
       .layout {{ display:block; }}
       .content {{ max-width:none; padding:0; }}
       .card, .lesson-section {{ box-shadow:none; border:1px solid #ccc; break-inside:avoid; page-break-inside:avoid; }}
@@ -452,6 +475,11 @@ def build_course_html(
       <ol>{toc_html}</ol>
       <button type="button" class="theme-toggle" id="theme-toggle" onclick="toggleTheme()">🌙 Dark</button>
       <button type="button" class="theme-toggle" style="margin-top:8px;" onclick="window.print()">🖨 {html.escape(labels['print_course'])}</button>
+      <div class="font-controls" aria-label="{html.escape(labels['font_size'])}">
+        <button type="button" class="secondary" onclick="changeFontSize(-1)">A−</button>
+        <button type="button" class="secondary" onclick="changeFontSize(1)">A+</button>
+      </div>
+      <p class="nav-hint">{html.escape(labels['nav_hint'])}</p>
     </aside>
     <main class="content">
       <section class="card hero" id="overview">
@@ -483,8 +511,44 @@ def build_course_html(
   <script>
     const SCORE_LABEL = {json.dumps(labels['score'])};
     const THEME_KEY = 'dtcg-theme';
+    const FONT_KEY = 'dtcg-font';
+    const NOTES_KEY = 'dtcg-notes-' + {json.dumps(course_slug)};
     const PROGRESS_KEY = 'dtcg-progress-' + {json.dumps(course_slug)};
     const LESSON_COUNT = {lesson_count};
+    const FONT_STEPS = ['font-sm', 'font-md', 'font-lg', 'font-xl'];
+    function applyFont(step) {{
+      FONT_STEPS.forEach(cls => document.body.classList.remove(cls));
+      const cls = FONT_STEPS[Math.max(0, Math.min(FONT_STEPS.length - 1, step))];
+      document.body.classList.add(cls);
+      try {{ localStorage.setItem(FONT_KEY, String(FONT_STEPS.indexOf(cls))); }} catch (e) {{}}
+    }}
+    function changeFontSize(delta) {{
+      let cur = FONT_STEPS.findIndex(cls => document.body.classList.contains(cls));
+      if (cur < 0) cur = 1;
+      applyFont(cur + delta);
+    }}
+    try {{
+      const savedFont = parseInt(localStorage.getItem(FONT_KEY) || '1', 10);
+      applyFont(Number.isFinite(savedFont) ? savedFont : 1);
+    }} catch (e) {{ applyFont(1); }}
+    function loadNotes() {{
+      try {{ return JSON.parse(localStorage.getItem(NOTES_KEY) || '{{}}'); }} catch (e) {{ return {{}}; }}
+    }}
+    function saveNotes(state) {{
+      try {{ localStorage.setItem(NOTES_KEY, JSON.stringify(state)); }} catch (e) {{}}
+    }}
+    (function initNotes() {{
+      const notes = loadNotes();
+      document.querySelectorAll('.lesson-note').forEach(area => {{
+        const id = area.getAttribute('data-lesson');
+        if (notes[id]) area.value = notes[id];
+        area.addEventListener('input', () => {{
+          const s = loadNotes();
+          s[id] = area.value;
+          saveNotes(s);
+        }});
+      }});
+    }})();
     function applyTheme(mode) {{
       document.body.classList.toggle('theme-dark', mode === 'dark');
       const btn = document.getElementById('theme-toggle');
@@ -503,6 +567,17 @@ def build_course_html(
     function updateProgress(prefix) {{ const cards = getQuizCards(prefix); const answered = cards.filter(card => card.querySelector('input[type="radio"]:checked')).length; const total = cards.length || 1; const percent = Math.round((answered / total) * 100); const bar = document.getElementById(`${{prefix}}-progress`); if (bar) bar.style.width = `${{percent}}%`; }}
     function gradeQuiz(prefix) {{ const cards = getQuizCards(prefix); let correct = 0; cards.forEach(card => {{ const selected = card.querySelector('input[type="radio"]:checked'); const options = card.querySelectorAll('.quiz-option'); options.forEach(opt => opt.classList.remove('correct','incorrect')); if (!selected) return; const correctAnswer = selected.getAttribute('data-correct'); const optionLabels = card.querySelectorAll('.quiz-option'); optionLabels.forEach(label => {{ const input = label.querySelector('input'); if (!input) return; if (input.value === correctAnswer) label.classList.add('correct'); if (input.checked && input.value !== correctAnswer) label.classList.add('incorrect'); }}); if (selected.value === correctAnswer) correct += 1; }}); const results = document.getElementById(`${{prefix}}-results`); if (results) {{ const total = cards.length; const percent = total ? Math.round((correct / total) * 100) : 0; results.style.display = 'block'; results.innerHTML = `<strong>${{SCORE_LABEL}}:</strong> ${{correct}} / ${{total}} (${{percent}}%)`; }} updateProgress(prefix); }}
     function resetQuiz(prefix) {{ const cards = getQuizCards(prefix); cards.forEach(card => {{ card.querySelectorAll('input[type="radio"]').forEach(input => input.checked = false); card.querySelectorAll('.quiz-option').forEach(opt => opt.classList.remove('correct','incorrect')); }}); const results = document.getElementById(`${{prefix}}-results`); if (results) {{ results.style.display = 'none'; results.innerHTML = ''; }} updateProgress(prefix); }}
+    function shuffleQuiz(prefix) {{
+      const section = document.getElementById(prefix === 'pretest' ? 'pretest' : 'final-quiz');
+      if (!section) return;
+      const cards = getQuizCards(prefix);
+      for (let i = cards.length - 1; i > 0; i--) {{
+        const j = Math.floor(Math.random() * (i + 1));
+        const tmp = cards[i]; cards[i] = cards[j]; cards[j] = tmp;
+      }}
+      cards.forEach(card => section.appendChild(card));
+      resetQuiz(prefix);
+    }}
     document.addEventListener('change', (event) => {{ const target = event.target; if (target.matches('input[type="radio"]')) {{ const name = target.name || ''; if (name.startsWith('pretest-')) updateProgress('pretest'); if (name.startsWith('final-')) updateProgress('final'); }} }});
     updateProgress('pretest'); updateProgress('final');
     function copyLessonLink(id) {{
@@ -569,6 +644,29 @@ def build_course_html(
       }};
       window.addEventListener('scroll', onScroll, {{ passive: true }});
       onScroll();
+    }})();
+    (function initKeyboardNav() {{
+      const navIds = Array.from(document.querySelectorAll('main [id]')).map(el => el.id).filter(Boolean);
+      if (!navIds.length) return;
+      function currentIndex() {{
+        let best = 0;
+        navIds.forEach((id, i) => {{
+          const el = document.getElementById(id);
+          if (el && el.getBoundingClientRect().top <= 140) best = i;
+        }});
+        return best;
+      }}
+      document.addEventListener('keydown', (e) => {{
+        const tag = (e.target && e.target.tagName) ? e.target.tagName.toLowerCase() : '';
+        if (tag === 'input' || tag === 'textarea' || tag === 'select') return;
+        if (!['j', 'k', 'ArrowDown', 'ArrowUp'].includes(e.key)) return;
+        e.preventDefault();
+        let idx = currentIndex();
+        if (e.key === 'j' || e.key === 'ArrowDown') idx = Math.min(idx + 1, navIds.length - 1);
+        else idx = Math.max(idx - 1, 0);
+        const el = document.getElementById(navIds[idx]);
+        if (el) el.scrollIntoView({{ behavior: 'smooth', block: 'start' }});
+      }});
     }})();
   </script>
 </body>

@@ -49,6 +49,7 @@ def build_output_index_markdown(
         "delivery_zip": "All artifacts in one ZIP",
         "output_index": "This index file",
         "run_manifest": "Compact run summary JSON",
+        "course_summary": "Compact course summary JSON for integrations",
     }
 
     for key in sorted(paths.keys()):
